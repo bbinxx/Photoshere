@@ -100,14 +100,6 @@ class ProcessingViewModel(
                 container.gallery.addStitchedSphere(result.outputFile, session.id)
             }
 
-            if (!settings.saveOriginals) {
-                withContext(Dispatchers.IO) {
-                    session.images.forEach { image ->
-                        File(image.filePath).delete()
-                    }
-                }
-            }
-
             var exportedUri: String? = null
             val warnings = result.warnings.toMutableList()
             if (settings.autoExport) {
@@ -117,12 +109,24 @@ class ProcessingViewModel(
                 exportedUri = withContext(Dispatchers.IO) {
                     container.exporter.exportToGallery(
                         source = File(record.filePath),
-                        metadata = SphereMetadata(width = result.width, height = result.height),
+                        metadata = SphereMetadata(
+                            width = result.width,
+                            height = result.height,
+                            poseHeadingDeg = ((session.referenceYawDeg % 360f) + 360f) % 360f,
+                        ),
                         displayName = record.title,
                     )
                 }?.toString()
                 if (exportedUri == null) {
                     warnings.add("The sphere was saved in the app but could not be exported to Photos")
+                }
+            }
+
+            if (!settings.saveOriginals && (exportedUri != null || !settings.autoExport)) {
+                withContext(Dispatchers.IO) {
+                    session.images.forEach { image ->
+                        File(image.filePath).delete()
+                    }
                 }
             }
 

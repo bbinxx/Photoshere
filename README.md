@@ -88,8 +88,9 @@ over the zenith, down and around, then to the nadir.
 ### Stitching
 
 `SensorPoseStitchingEngine` builds an equirectangular accumulator. For each
-source pixel it reconstructs a camera ray using the horizontal FOV, rotates it
-with the capture quaternion, and splats it into the panorama. Overlaps use a
+source pixel it reconstructs a camera ray using that capture's horizontal FOV
+(recorded per image, with the session FOV as a fallback), rotates it with the
+capture quaternion, and splats it into the panorama. Overlaps use a
 cosine/edge weight, each frame receives a bounded exposure gain, uncovered
 pixels are filled from valid neighbours, and the JPEG is written with GPano
 metadata.
