@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -53,6 +52,8 @@ data class CaptureUiState(
     val notice: String? = null,
     val completedSessionId: String? = null,
     val coverage: Float = 0f,
+    val hapticFeedback: Boolean = true,
+    val soundFeedback: Boolean = true,
 )
 
 sealed interface CaptureEvent {
@@ -251,12 +252,16 @@ class CaptureViewModel(
             settings.minAngularSpeedRadPerSec,
             settings.stabilityMs,
         )
-        mutableState.value = mutableState.value.copy(autoCapture = settings.autoCapture)
+        mutableState.value = mutableState.value.copy(
+            autoCapture = settings.autoCapture,
+            hapticFeedback = settings.hapticFeedback,
+            soundFeedback = settings.soundFeedback,
+        )
     }
 
     private fun observeOrientation() {
         orientationJob = viewModelScope.launch {
-            orientationTracker.state.collectLatest { snapshot ->
+            orientationTracker.state.collect { snapshot ->
                 handleOrientation(snapshot)
             }
         }
@@ -322,6 +327,10 @@ class CaptureViewModel(
     }
 
     private fun handleOrientation(snapshot: OrientationSnapshot) {
+        if (!sessionCreated) {
+            maybeCreateSession()
+            return
+        }
         val target = targets.getOrNull(currentTargetIndex)
         val alignment = if (target != null) {
             alignmentDetector.evaluate(snapshot, target)
@@ -355,7 +364,7 @@ class CaptureViewModel(
                 orientation = snapshot,
                 alignment = alignment,
                 instruction = instruction,
-                sensorDegraded = !snapshot.sensorAvailable,
+                sensorDegraded = snapshot.usingFallback || !snapshot.sensorAvailable,
                 totalCount = targets.size,
                 capturedCount = targets.count { it.status == TargetStatus.CAPTURED },
             )

@@ -50,6 +50,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -110,6 +111,9 @@ fun CameraScreen(
         val haptic = LocalHapticFeedback.current
         val snackbarHostState = remember { SnackbarHostState() }
         val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
+        val feedback by rememberUpdatedState(
+            ui.hapticFeedback to ui.soundFeedback,
+        )
         val previewView = remember {
             PreviewView(context).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -133,14 +137,19 @@ fun CameraScreen(
 
         LaunchedEffect(Unit) {
             viewModel.events.collect { event ->
+                val (hapticsEnabled, soundEnabled) = feedback
                 when (event) {
                     CaptureEvent.Shutter -> {
-                        sound.play(MediaActionSound.SHUTTER_CLICK)
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (soundEnabled) sound.play(MediaActionSound.SHUTTER_CLICK)
+                        if (hapticsEnabled) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
                     }
-                    CaptureEvent.Success -> haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    CaptureEvent.Failure -> haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    CaptureEvent.Completed -> haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    CaptureEvent.Success, CaptureEvent.Failure, CaptureEvent.Completed -> {
+                        if (hapticsEnabled) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    }
                 }
             }
         }

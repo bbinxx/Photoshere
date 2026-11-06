@@ -73,6 +73,11 @@ class GalleryRepository(private val context: Context) {
                 forcedId = id,
                 forcedTitle = "Imported ${defaultTitle()}",
             ) ?: return@runCatching null
+            val aspect = record.width.toFloat() / record.height.toFloat()
+            if (aspect < 1.7f || aspect > 2.3f) {
+                destination.delete()
+                return@runCatching null
+            }
             val updated = (mutableRecords.value + record).sortedByDescending { it.createdAtMs }
             mutableRecords.value = updated
             writeIndex(updated)

@@ -58,6 +58,7 @@ class OrientationTracker(context: Context) {
     private var lastAccelerometerMagnitude = 0f
     private var linearMotion = 0f
     private var hasRotationVector = false
+    private var fallbackReady = false
     private val gravityValues = FloatArray(3)
     private val magneticValues = FloatArray(3)
     private val rotationMatrix = FloatArray(9)
@@ -199,7 +200,8 @@ class OrientationTracker(context: Context) {
             angularSpeedRadPerSec = gyroMagnitude,
             stable = stability.stable,
             stableForMs = stability.stableForMs,
-            sensorAvailable = hasRotationVector,
+            sensorAvailable = hasRotationVector || fallbackReady,
+            usingFallback = !hasRotationVector && fallbackReady,
             timestampNanos = timestampNanos,
         )
     }
@@ -210,6 +212,7 @@ class OrientationTracker(context: Context) {
      * stable, so the UI marks the session as degraded.
      */
     private fun accelerometerFallbackQuaternion(): Quaternion {
+        if (rotationSensor != null) return smoothedQuaternion
         if (accelerometerMagnitude < 1e-3f || magneticValues.all { it == 0f }) {
             return smoothedQuaternion
         }
@@ -223,7 +226,10 @@ class OrientationTracker(context: Context) {
         val deviceX = Vec3(rotationMatrix[0], rotationMatrix[3], rotationMatrix[6])
         val deviceY = Vec3(rotationMatrix[1], rotationMatrix[4], rotationMatrix[7])
         val deviceZ = Vec3(rotationMatrix[2], rotationMatrix[5], rotationMatrix[8])
-        return Quaternion.fromBasis(deviceX, deviceY, deviceZ)
+        val quaternion = Quaternion.fromBasis(deviceX, deviceY, deviceZ)
+        fallbackReady = true
+        smoothedQuaternion = quaternion
+        return quaternion
     }
 
     private companion object {

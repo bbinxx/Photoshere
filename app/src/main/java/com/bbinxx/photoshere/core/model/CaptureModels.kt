@@ -95,6 +95,7 @@ data class OrientationSnapshot(
     val stable: Boolean = false,
     val stableForMs: Long = 0L,
     val sensorAvailable: Boolean = false,
+    val usingFallback: Boolean = false,
     val timestampNanos: Long = 0L,
 ) {
     val forwardDirection: Vec3

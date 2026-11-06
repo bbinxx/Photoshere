@@ -91,7 +91,7 @@ object CapturePlanner {
     private fun ringCount(pitchDeg: Float, horizontalStepDeg: Float): Int {
         val latitudeScale = cos(Math.toRadians(pitchDeg.toDouble())).toFloat().coerceAtLeast(0.12f)
         val raw = ceil(360.0 * latitudeScale / horizontalStepDeg).toInt()
-        return raw.coerceIn(2, 24)
+        return raw.coerceIn(2, 36)
     }
 
     private fun normalizeYaw(yaw: Float): Float {
