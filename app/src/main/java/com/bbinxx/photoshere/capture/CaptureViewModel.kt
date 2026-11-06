@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 data class CaptureUiState(
     val state: CaptureState = CaptureState.IDLE,
@@ -162,6 +163,19 @@ class CaptureViewModel(
 
     fun refreshRotation(rotationDegrees: Int) {
         cameraController.updateRotation(rotationDegrees)
+        val active = session
+        val lens = cameraController.selectedLens()
+        if (active != null &&
+            active.images.none { it.accepted } &&
+            lens != null &&
+            (abs(lens.horizontalFovDeg - active.horizontalFovDeg) > 0.5f ||
+                abs(lens.verticalFovDeg - active.verticalFovDeg) > 0.5f)
+        ) {
+            session = null
+            targets = emptyList()
+            sessionCreated = false
+            sessionStore.delete(active.id)
+        }
         maybeCreateSession()
     }
 
@@ -175,17 +189,21 @@ class CaptureViewModel(
     fun setZoom(ratio: Float) = cameraController.setZoom(ratio)
 
     fun selectLens(cameraId: String) {
-        if (session?.images?.isNotEmpty() == true) {
+        if (session?.images?.any { it.accepted } == true) {
             mutableState.value = mutableState.value.copy(
                 notice = "Camera cannot be changed after the first capture",
             )
             return
         }
         viewModelScope.launch {
+            val discarded = session
             cameraController.selectLens(cameraId)
             session = null
             targets = emptyList()
             sessionCreated = false
+            if (discarded != null && discarded.images.none { it.accepted }) {
+                sessionStore.delete(discarded.id)
+            }
             maybeCreateSession()
         }
     }
@@ -225,7 +243,11 @@ class CaptureViewModel(
         val active = session
         mutableState.value = mutableState.value.copy(state = CaptureState.CANCELLED)
         if (active != null) {
-            sessionStore.save(active.copy(completed = false))
+            if (active.images.none { it.accepted }) {
+                sessionStore.delete(active.id)
+            } else {
+                sessionStore.save(active.copy(completed = false))
+            }
         }
     }
 
@@ -246,6 +268,7 @@ class CaptureViewModel(
     }
 
     private fun applySettings(settings: CaptureSettings) {
+        cameraController.setCaptureLocks(settings.exposureLock, settings.focusLock)
         alignmentDetector.toleranceDegrees = settings.alignmentToleranceDeg
         alignmentDetector.requiredStableMs = settings.stabilityMs
         orientationTracker.updateStabilityConfiguration(
@@ -272,7 +295,7 @@ class CaptureViewModel(
             cameraController.state.collect { cameraState ->
                 mutableState.value = mutableState.value.copy(
                     camera = cameraState,
-                    canSwitchLens = session?.images?.isNullOrEmpty() ?: true,
+                    canSwitchLens = session?.images?.none { it.accepted } ?: true,
                     error = cameraState.error ?: mutableState.value.error,
                 )
                 if (cameraState.ready) maybeCreateSession()
@@ -432,6 +455,7 @@ class CaptureViewModel(
                     instruction = "Checking image…",
                 )
                 val quality = withContext(Dispatchers.IO) { qualityValidator.validate(file) }
+                val lens = cameraController.selectedLens()
                 val meta = CapturedImageMeta(
                     targetId = target.id,
                     filePath = file.absolutePath,
@@ -443,6 +467,8 @@ class CaptureViewModel(
                     meanLuma = quality.meanLuma,
                     accepted = quality.acceptable,
                     note = quality.reason,
+                    horizontalFovDeg = lens?.horizontalFovDeg ?: active.horizontalFovDeg,
+                    verticalFovDeg = lens?.verticalFovDeg ?: active.verticalFovDeg,
                 )
                 val updatedImages = active.images + meta
                 if (!quality.acceptable) {

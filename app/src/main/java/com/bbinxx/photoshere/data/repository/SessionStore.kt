@@ -13,7 +13,8 @@ import java.io.File
 
 /**
  * Durable session storage. Source captures are kept in
- * filesDir/sessions/<id>/raw_*.jpg and are never deleted by stitching.
+ * filesDir/sessions/<id>/raw_*.jpg until the stitched result is safely saved, unless
+ * the user opts to keep originals.
  * The metadata is a small JSON document so an interrupted session can be reopened.
  */
 class SessionStore(private val context: Context) {
@@ -76,6 +77,11 @@ class SessionStore(private val context: Context) {
     fun existingImages(session: SessionMetadata): List<CapturedImageMeta> =
         session.images.filter { File(it.filePath).exists() && it.accepted }
 
+    fun delete(sessionId: String): Boolean {
+        val dir = File(root, sessionId)
+        return dir.exists() && dir.deleteRecursively()
+    }
+
     private fun SessionMetadata.toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("createdAtMs", createdAtMs)
@@ -109,6 +115,8 @@ class SessionStore(private val context: Context) {
                     put("meanLuma", image.meanLuma.toDouble())
                     put("accepted", image.accepted)
                     put("note", image.note)
+                    put("horizontalFovDeg", image.horizontalFovDeg.toDouble())
+                    put("verticalFovDeg", image.verticalFovDeg.toDouble())
                 })
             }
         })
@@ -149,6 +157,8 @@ class SessionStore(private val context: Context) {
                     meanLuma = image.optDouble("meanLuma", 0.0).toFloat(),
                     accepted = image.optBoolean("accepted", true),
                     note = image.optString("note").takeIf { it.isNotBlank() && it != "null" },
+                    horizontalFovDeg = image.optDouble("horizontalFovDeg", 0.0).toFloat(),
+                    verticalFovDeg = image.optDouble("verticalFovDeg", 0.0).toFloat(),
                 )
             },
             completed = optBoolean("completed", false),

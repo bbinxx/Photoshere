@@ -291,17 +291,23 @@ class CameraXController(
         val previewInterop = Camera2Interop.Extender(previewBuilder)
         val captureInterop = Camera2Interop.Extender(imageCaptureBuilder)
 
+        // Preview keeps AE/AWB running so the viewfinder converges. The lock is
+        // applied only to the still request, freezing the current metered state
+        // for that frame instead of starting from an arbitrary locked value.
         if (exposureLock) {
-            previewInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
             captureInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
         }
         if (whiteBalanceLock) {
-            previewInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
             captureInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
         }
         if (focusLock && afModes?.contains(CaptureRequest.CONTROL_AF_MODE_OFF) == true) {
             // Fixed infinity focus is appropriate for landscape spheres and keeps
             // consecutive frames consistent. Users can disable it in settings.
+            previewInterop.setCaptureRequestOption(
+                CaptureRequest.CONTROL_AF_MODE,
+                CaptureRequest.CONTROL_AF_MODE_OFF,
+            )
+            previewInterop.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
             captureInterop.setCaptureRequestOption(
                 CaptureRequest.CONTROL_AF_MODE,
                 CaptureRequest.CONTROL_AF_MODE_OFF,
@@ -328,12 +334,10 @@ class CameraXController(
                 androidx.camera.core.CameraState.Type.OPEN,
                 androidx.camera.core.CameraState.Type.OPENING,
                 -> mutableState.value = mutableState.value.copy(ready = true)
-
-                else -> Unit
             }
             cameraState.error?.let { error ->
                 mutableState.value = mutableState.value.copy(
-                    error = error.code.toString(),
+                    error = cameraErrorMessage(error.code),
                     ready = false,
                 )
             }
@@ -348,9 +352,11 @@ class CameraXController(
     private var stateObserverRef: Observer<androidx.camera.core.CameraState>? = null
 
     private fun removeObservers() {
-        val boundCamera = camera ?: return
-        zoomObserverRef?.let { boundCamera.cameraInfo.zoomState.removeObserver(it) }
-        stateObserverRef?.let { boundCamera.cameraInfo.cameraState.removeObserver(it) }
+        val boundCamera = camera
+        if (boundCamera != null) {
+            zoomObserverRef?.let { boundCamera.cameraInfo.zoomState.removeObserver(it) }
+            stateObserverRef?.let { boundCamera.cameraInfo.cameraState.removeObserver(it) }
+        }
         zoomObserverRef = null
         stateObserverRef = null
     }
@@ -432,6 +438,16 @@ class CameraXController(
         } else {
             sensorWidthFov.toFloat() to sensorHeightFov.toFloat()
         }
+    }
+
+    private fun cameraErrorMessage(code: Int): String = when (code) {
+        androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE ->
+            "Camera is already in use by another app"
+        androidx.camera.core.CameraState.ERROR_MAX_CAMERAS_IN_USE ->
+            "Too many cameras are active"
+        androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ->
+            "Camera is disabled by policy"
+        else -> "Camera error ($code)"
     }
 
     private companion object {

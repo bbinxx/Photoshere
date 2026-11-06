@@ -41,6 +41,15 @@ class GalleryRepository(private val context: Context) {
 
     suspend fun addStitchedSphere(source: File, sessionId: String?, title: String? = null): PhotoSphereRecord =
         withContext(Dispatchers.IO) {
+            if (sessionId != null) {
+                val previous = mutableRecords.value.filter { it.sessionId == sessionId }
+                if (previous.isNotEmpty()) {
+                    previous.forEach { File(it.filePath).delete() }
+                    val remaining = mutableRecords.value - previous.toSet()
+                    mutableRecords.value = remaining
+                    writeIndex(remaining)
+                }
+            }
             val id = "sphere_${System.currentTimeMillis()}"
             val destination = File(root, "$id.jpg")
             if (source.absolutePath != destination.absolutePath) {

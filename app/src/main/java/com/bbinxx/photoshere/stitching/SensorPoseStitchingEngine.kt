@@ -206,7 +206,10 @@ class SensorPoseStitchingEngine(
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
         val quaternion = Quaternion.fromFloatArray(meta.quaternion.toFloatArray()).normalized()
-        val focal = (0.5 * width / tan(Math.toRadians(horizontalFovDeg.toDouble()) / 2.0)).toFloat()
+        val imageHorizontalFov = meta.horizontalFovDeg
+            .takeIf { it in 20f..150f }
+            ?: horizontalFovDeg
+        val focal = (0.5 * width / tan(Math.toRadians(imageHorizontalFov.toDouble()) / 2.0)).toFloat()
         val cameraForward = quaternion.rotate(Vec3.FORWARD)
         val gain = gainProvider(preprocessor.centralMeanLuma(pixels, width, height))
         val feather = (0.07f * minOf(width, height)).coerceAtLeast(4f)

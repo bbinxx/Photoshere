@@ -126,6 +126,8 @@ data class CapturedImageMeta(
     val meanLuma: Float = 0f,
     val accepted: Boolean = true,
     val note: String? = null,
+    val horizontalFovDeg: Float = 0f,
+    val verticalFovDeg: Float = 0f,
 )
 
 data class SessionMetadata(
