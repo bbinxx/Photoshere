@@ -10,14 +10,17 @@ class PhotoSphereApplication : Application() {
     lateinit var container: AppContainer
         private set
 
-    var openCvAvailable: Boolean = false
-        private set
+    // Native vision is optional for opening the app and camera. Load it only
+    // when a computer-vision feature requests it, rather than during startup.
+    val openCvAvailable: Boolean by lazy {
+        runCatching { OpenCVLoader.initLocal() }.getOrDefault(false).also {
+            Log.i(TAG, "OpenCV initialised: $it")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
-        openCvAvailable = runCatching { OpenCVLoader.initLocal() }.getOrDefault(false)
-        Log.i(TAG, "OpenCV initialised: $openCvAvailable")
     }
 
     private companion object {

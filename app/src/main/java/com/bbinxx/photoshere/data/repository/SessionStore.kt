@@ -13,7 +13,8 @@ import java.io.File
 
 /**
  * Durable session storage. Source captures are kept in
- * filesDir/sessions/<id>/raw_*.jpg and are never deleted by stitching.
+ * filesDir/sessions/<id>/raw_*.jpg. Originals are retained after processing;
+ * a user-confirmed capture deletion explicitly removes that session's files.
  * The metadata is a small JSON document so an interrupted session can be reopened.
  */
 class SessionStore(private val context: Context) {
@@ -60,7 +61,7 @@ class SessionStore(private val context: Context) {
     }
 
     fun load(sessionId: String): SessionMetadata? {
-        val file = File(sessionDir(sessionId), "session.json")
+        val file = File(File(root, sessionId), "session.json")
         if (!file.exists()) return null
         return runCatching { JSONObject(file.readText()).toSession() }.getOrNull()
     }
@@ -75,6 +76,12 @@ class SessionStore(private val context: Context) {
 
     fun existingImages(session: SessionMetadata): List<CapturedImageMeta> =
         session.images.filter { File(it.filePath).exists() && it.accepted }
+
+    fun delete(sessionId: String): Boolean {
+        val dir = File(root, sessionId)
+        require(dir.canonicalFile.parentFile == root.canonicalFile) { "Invalid capture session" }
+        return !dir.exists() || dir.deleteRecursively()
+    }
 
     private fun SessionMetadata.toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -108,7 +115,10 @@ class SessionStore(private val context: Context) {
                     put("sharpness", image.sharpness.toDouble())
                     put("meanLuma", image.meanLuma.toDouble())
                     put("accepted", image.accepted)
+                    put("manualOverride", image.manualOverride)
                     put("note", image.note)
+                    put("horizontalFovDeg", image.horizontalFovDeg.toDouble())
+                    put("verticalFovDeg", image.verticalFovDeg.toDouble())
                 })
             }
         })
@@ -148,7 +158,10 @@ class SessionStore(private val context: Context) {
                     sharpness = image.optDouble("sharpness", 0.0).toFloat(),
                     meanLuma = image.optDouble("meanLuma", 0.0).toFloat(),
                     accepted = image.optBoolean("accepted", true),
+                    manualOverride = image.optBoolean("manualOverride", false),
                     note = image.optString("note").takeIf { it.isNotBlank() && it != "null" },
+                    horizontalFovDeg = image.optDouble("horizontalFovDeg", 0.0).toFloat(),
+                    verticalFovDeg = image.optDouble("verticalFovDeg", 0.0).toFloat(),
                 )
             },
             completed = optBoolean("completed", false),

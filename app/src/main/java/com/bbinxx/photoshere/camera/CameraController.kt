@@ -20,6 +20,7 @@ data class CameraState(
     val exposureCompensation: Int = 0,
     val minExposureCompensation: Int = 0,
     val maxExposureCompensation: Int = 0,
+    val previewAspectRatio: Float = 3f / 4f,
     val error: String? = null,
 )
 

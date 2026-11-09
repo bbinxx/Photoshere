@@ -27,17 +27,14 @@ import kotlin.math.tan
 /**
  * Spherical projector driven by the fused sensor pose recorded at capture time.
  *
- * For every source pixel we reconstruct the camera ray in device coordinates
- * (principal point at the image centre, focal length from the measured
- * horizontal FOV), rotate it into the world frame with the capture quaternion,
- * and splat it into an equirectangular accumulator. Overlaps are blended with a
- * cosine + edge feather weight, exposure is normalised per frame, and remaining
- * uncovered pixels are hole-filled from valid neighbours.
+ * Each destination ray is mapped into the source camera using its sensor pose
+ * and measured field of view, then bilinearly sampled. Overlaps use cosine and
+ * edge feather weights with per-frame exposure normalisation. Unobserved areas
+ * remain unfilled and are reported to the user.
  *
  * Limitations, stated explicitly:
- *  - Camera pose comes from the rotation vector. Gyro drift or magnetic
- *    disturbance can shift images; feature-based bundle adjustment is the next
- *    quality step and is not silently claimed here.
+ *  - Sensor poses receive conservative local ORB/RANSAC rotation refinement.
+ *    Global bundle adjustment is not implemented; drift/parallax may remain.
  *  - Lens distortion is not corrected unless a calibration profile is supplied.
  *  - Moving objects may ghost because no temporal de-ghosting is applied.
  */
@@ -70,6 +67,11 @@ class SensorPoseStitchingEngine(
         var accum: FloatArray? = null
         var weights: FloatArray? = null
         try {
+            onProgress(ProcessingProgress(0f, "Matching overlapping images"))
+            val alignment = VisualPoseRefiner().refine(images) {
+                onProgress(ProcessingProgress(it * 0.25f, "Refining image alignment"))
+            }
+            warnings += alignment.warnings
             val rgbAccum = FloatArray(pixelCount * 3)
             val weightAccum = FloatArray(pixelCount)
             accum = rgbAccum
@@ -77,11 +79,9 @@ class SensorPoseStitchingEngine(
 
             val referenceYawRad = Math.toRadians(session.referenceYawDeg.toDouble())
             val horizontalFov = session.horizontalFovDeg.coerceIn(25f, 120f)
-            var runningLuma = 0.0
-            var gainSamples = 0
             var used = 0
 
-            images.forEachIndexed { index, meta ->
+            alignment.images.forEachIndexed { index, meta ->
                 coroutineContext.ensureActive()
                 val bitmap = preprocessor.load(File(meta.filePath), maxSourceSide)
                 if (bitmap == null) {
@@ -100,16 +100,6 @@ class SensorPoseStitchingEngine(
                         referenceYawRad = referenceYawRad,
                         rgbAccum = rgbAccum,
                         weightAccum = weightAccum,
-                        preprocessor = preprocessor,
-                        gainProvider = { luma ->
-                            val gain = if (gainSamples == 0) 1.0 else {
-                                val target = runningLuma / gainSamples
-                                (target / luma.coerceAtLeast(1.0)).coerceIn(0.75, 1.35)
-                            }
-                            runningLuma += luma
-                            gainSamples++
-                            gain.toFloat()
-                        },
                     )
                     used++
                 } finally {
@@ -117,7 +107,7 @@ class SensorPoseStitchingEngine(
                 }
                 onProgress(
                     ProcessingProgress(
-                        fraction = (index + 1).toFloat() / images.size * 0.85f,
+                        fraction = 0.25f + (index + 1).toFloat() / images.size * 0.60f,
                         stage = "Projecting ${index + 1} of ${images.size}",
                     ),
                 )
@@ -187,7 +177,7 @@ class SensorPoseStitchingEngine(
         }
     }
 
-    private fun projectImage(
+    private suspend fun projectImage(
         bitmap: Bitmap,
         meta: CapturedImageMeta,
         outputWidth: Int,
@@ -196,71 +186,90 @@ class SensorPoseStitchingEngine(
         referenceYawRad: Double,
         rgbAccum: FloatArray,
         weightAccum: FloatArray,
-        preprocessor: ImagePreprocessor,
-        gainProvider: (Double) -> Float,
     ) {
         val width = bitmap.width
         val height = bitmap.height
         if (width < 4 || height < 4) return
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-
-        val quaternion = Quaternion.fromFloatArray(meta.quaternion.toFloatArray()).normalized()
-        val focal = (0.5 * width / tan(Math.toRadians(horizontalFovDeg.toDouble()) / 2.0)).toFloat()
-        val cameraForward = quaternion.rotate(Vec3.FORWARD)
-        val gain = gainProvider(preprocessor.centralMeanLuma(pixels, width, height))
+        val inverse = Quaternion.fromFloatArray(meta.quaternion.toFloatArray()).inverse()
+        val axisX = inverse.rotate(Vec3(1f, 0f, 0f))
+        val axisY = inverse.rotate(Vec3(0f, 1f, 0f))
+        val axisZ = inverse.rotate(Vec3(0f, 0f, 1f))
+        val hFov = meta.horizontalFovDeg.takeIf { it in 20f..150f } ?: horizontalFovDeg
+        val fx = (width * 0.5 / tan(Math.toRadians(hFov.toDouble()) * 0.5)).toFloat()
+        val fy = meta.verticalFovDeg.takeIf { it in 20f..150f }?.let {
+            (height * 0.5 / tan(Math.toRadians(it.toDouble()) * 0.5)).toFloat()
+        } ?: fx
         val feather = (0.07f * minOf(width, height)).coerceAtLeast(4f)
-        val centerX = width / 2f
-        val centerY = height / 2f
-
-        for (y in 0 until height) {
-            val rowOffset = y * width
-            val ny = -((y + 0.5f) - centerY) / focal
-            for (x in 0 until width) {
-                val nx = ((x + 0.5f) - centerX) / focal
-                val rayLocal = Vec3(nx, ny, -1f).normalized()
-                val direction = quaternion.rotate(rayLocal)
-                val cosToCenter = direction.dot(cameraForward)
-                if (cosToCenter <= 0.02f) continue
-
-                val longitude = wrapRadians(
-                    atan2(direction.x.toDouble(), direction.y.toDouble()) - referenceYawRad,
-                )
-                val latitude = asin(direction.z.coerceIn(-1f, 1f).toDouble())
-                val ox = ((longitude + PI) / (2.0 * PI)) * outputWidth
-                val oy = ((PI / 2.0 - latitude) / PI) * outputHeight
-                if (oy < 0.0 || oy >= outputHeight) continue
-
-                var x0 = floor(ox).toInt()
-                val fy = (oy - floor(oy)).toFloat()
-                var y0 = floor(oy).toInt()
-                if (x0 >= outputWidth) x0 -= outputWidth
-                if (x0 < 0) x0 += outputWidth
-                val fx = (ox - floor(ox)).toFloat()
-                val x1 = if (x0 == outputWidth - 1) 0 else x0 + 1
-                var y1 = y0 + 1
-                if (y1 >= outputHeight) y1 = outputHeight - 1
-                if (y0 >= outputHeight) y0 = outputHeight - 1
-
-                val edge = minOf(x, width - 1 - x, y, height - 1 - y).toFloat()
-                val edgeWeight = (edge / feather).coerceIn(0f, 1f)
-                if (edgeWeight <= 0f) continue
-                val weight = cosToCenter * cosToCenter * edgeWeight
-
-                val color = pixels[rowOffset + x]
-                val r = ((color shr 16) and 0xFF) / 255f * gain
-                val g = ((color shr 8) and 0xFF) / 255f * gain
-                val b = (color and 0xFF) / 255f * gain
-
-                val w00 = (1f - fx) * (1f - fy) * weight
-                val w10 = fx * (1f - fy) * weight
-                val w01 = (1f - fx) * fy * weight
-                val w11 = fx * fy * weight
-
-                splat(rgbAccum, weightAccum, y0 * outputWidth + x0, r, g, b, w00)
-                splat(rgbAccum, weightAccum, y0 * outputWidth + x1, r, g, b, w10)
-                splat(rgbAccum, weightAccum, y1 * outputWidth + x0, r, g, b, w01)
-                splat(rgbAccum, weightAccum, y1 * outputWidth + x1, r, g, b, w11)
+        val sinLon = FloatArray(outputWidth)
+        val cosLon = FloatArray(outputWidth)
+        for (x in 0 until outputWidth) {
+            val longitude = ((x + 0.5) / outputWidth * 2 - 1) * PI + referenceYawRad
+            sinLon[x] = sin(longitude).toFloat()
+            cosLon[x] = cos(longitude).toFloat()
+        }
+        val exposureSamples = mutableListOf<Pair<Float, Float>>()
+        for (y in 0 until outputHeight step 16) {
+            coroutineContext.ensureActive()
+            val lat = PI / 2 - (y + 0.5) / outputHeight * PI
+            val cp = cos(lat).toFloat()
+            val wz = sin(lat).toFloat()
+            for (x in 0 until outputWidth step 16) {
+                val index = y * outputWidth + x
+                val previousWeight = weightAccum[index]
+                if (previousWeight < 0.1f) continue
+                val wx = cp * sinLon[x]
+                val wy = cp * cosLon[x]
+                val z = axisX.z * wx + axisY.z * wy + axisZ.z * wz
+                if (z >= -0.02f) continue
+                val sx = width * 0.5f + fx * (axisX.x * wx + axisY.x * wy + axisZ.x * wz) / -z
+                val sy = height * 0.5f - fy * (axisX.y * wx + axisY.y * wy + axisZ.y * wz) / -z
+                if (sx < feather || sy < feather || sx >= width - feather || sy >= height - feather) continue
+                val color = pixels[sy.toInt() * width + sx.toInt()]
+                val source = (0.299f * ((color shr 16) and 255) + 0.587f * ((color shr 8) and 255) +
+                    0.114f * (color and 255)) / 255f
+                val offset = index * 3
+                val previous = (0.299f * rgbAccum[offset] + 0.587f * rgbAccum[offset + 1] +
+                    0.114f * rgbAccum[offset + 2]) / previousWeight
+                exposureSamples += previous to source
+            }
+        }
+        val gain = OverlapExposure.gain(exposureSamples)
+        // Inverse mapping samples every destination ray. Forward splatting
+        // leaves resolution-dependent holes, especially around the poles.
+        for (y in 0 until outputHeight) {
+            coroutineContext.ensureActive()
+            val latitude = PI / 2 - (y + 0.5) / outputHeight * PI
+            val cp = cos(latitude).toFloat()
+            val wz = sin(latitude).toFloat()
+            for (x in 0 until outputWidth) {
+                val wx = cp * sinLon[x]
+                val wy = cp * cosLon[x]
+                val cz = axisX.z * wx + axisY.z * wy + axisZ.z * wz
+                if (cz >= -0.02f) continue
+                val cx = axisX.x * wx + axisY.x * wy + axisZ.x * wz
+                val cy = axisX.y * wx + axisY.y * wy + axisZ.y * wz
+                val sx = width * 0.5f + fx * cx / -cz - 0.5f
+                val sy = height * 0.5f - fy * cy / -cz - 0.5f
+                if (sx < 0f || sy < 0f || sx >= width - 1 || sy >= height - 1) continue
+                val ix = sx.toInt()
+                val iy = sy.toInt()
+                val dx = sx - ix
+                val dy = sy - iy
+                val edge = minOf(sx, width - 1 - sx, sy, height - 1 - sy)
+                val weight = cz * cz * (edge / feather).coerceIn(0f, 1f)
+                val a = pixels[iy * width + ix]
+                val b = pixels[iy * width + ix + 1]
+                val c = pixels[(iy + 1) * width + ix]
+                val d = pixels[(iy + 1) * width + ix + 1]
+                fun channel(shift: Int): Float {
+                    val top = ((a shr shift) and 255) * (1 - dx) + ((b shr shift) and 255) * dx
+                    val bottom = ((c shr shift) and 255) * (1 - dx) + ((d shr shift) and 255) * dx
+                    return (top * (1 - dy) + bottom * dy) / 255f * gain
+                }
+                splat(rgbAccum, weightAccum, y * outputWidth + x,
+                    channel(16), channel(8), channel(0), weight)
             }
         }
     }
@@ -283,7 +292,7 @@ class SensorPoseStitchingEngine(
     }
 
     /** Returns the fraction of the sphere that had real pixel coverage. */
-    private fun normaliseAndFill(
+    private suspend fun normaliseAndFill(
         accum: FloatArray,
         weights: FloatArray,
         width: Int,
@@ -292,6 +301,7 @@ class SensorPoseStitchingEngine(
         val total = width * height
         var covered = 0
         for (i in 0 until total) {
+            if (i % width == 0) coroutineContext.ensureActive()
             val weight = weights[i]
             if (weight > 1e-4f) {
                 val inv = 1f / weight
@@ -303,45 +313,8 @@ class SensorPoseStitchingEngine(
         }
         val coverage = covered.toFloat() / total
 
-        // Fill uncovered pixels from valid neighbours. Repeated passes propagate
-        // colour into small holes; large unobserved regions remain flagged.
-        if (covered < total) {
-            val filled = BooleanArray(total) { weights[it] > 1e-4f }
-            for (pass in 0 until 12) {
-                var changed = 0
-                for (y in 1 until height - 1) {
-                    val row = y * width
-                    for (x in 1 until width - 1) {
-                        val index = row + x
-                        if (filled[index]) continue
-                        var r = 0f
-                        var g = 0f
-                        var b = 0f
-                        var count = 0
-                        for (dy in -1..1) {
-                            for (dx in -1..1) {
-                                if (dx == 0 && dy == 0) continue
-                                val n = index + dy * width + dx
-                                if (filled[n]) {
-                                    r += accum[n * 3]
-                                    g += accum[n * 3 + 1]
-                                    b += accum[n * 3 + 2]
-                                    count++
-                                }
-                            }
-                        }
-                        if (count > 0) {
-                            accum[index * 3] = r / count
-                            accum[index * 3 + 1] = g / count
-                            accum[index * 3 + 2] = b / count
-                            filled[index] = true
-                            changed++
-                        }
-                    }
-                }
-                if (changed == 0) break
-            }
-        }
+        // Never invent sky or ground by propagating neighbouring colours.
+        // Missing coverage is reported so the original session can be retaken.
         return coverage
     }
 

@@ -52,12 +52,16 @@ class OrientationTracker(context: Context) {
     @Volatile
     private var referenceYawDeg: Float? = null
 
+    @Volatile
+    private var cameraFrame = Quaternion.IDENTITY
+
     private var smoothedQuaternion = Quaternion.IDENTITY
     private var gyroMagnitude = 0f
     private var accelerometerMagnitude = 0f
     private var lastAccelerometerMagnitude = 0f
     private var linearMotion = 0f
     private var hasRotationVector = false
+    private var fallbackReady = false
     private val gravityValues = FloatArray(3)
     private val magneticValues = FloatArray(3)
     private val rotationMatrix = FloatArray(9)
@@ -99,6 +103,19 @@ class OrientationTracker(context: Context) {
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
+
+    /** Display rotation is Surface.ROTATION_*, a quarter-turn index, not degrees.
+     * EXIF-normalised pixels use the display right/up axes. Front captures look
+     * along +device Z and are saved unmirrored by CameraX.
+     */
+    fun setCameraFrame(displayRotation: Int, front: Boolean) {
+        val display = Quaternion.fromAxisAngle(
+            Vec3(0f, 0f, 1f), displayRotation * (Math.PI / 2).toFloat(),
+        )
+        val facing = if (front) Quaternion.fromAxisAngle(Vec3(0f, 1f, 0f), Math.PI.toFloat())
+            else Quaternion.IDENTITY
+        cameraFrame = (display * facing).normalized()
     }
 
     fun start() {
@@ -163,12 +180,9 @@ class OrientationTracker(context: Context) {
     }
 
     private fun handleRotationVector(event: SensorEvent) {
-        val q = if (event.values.size >= 4 && event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
-            // Some devices provide a 4th heading-accuracy element; it is not used.
-            Quaternion.fromRotationVector(event.values[0], event.values[1], event.values[2])
-        } else {
-            Quaternion.fromRotationVector(event.values[0], event.values[1], event.values[2])
-        }
+        val q = Quaternion.fromRotationVector(
+            event.values[0], event.values[1], event.values[2], event.values.getOrNull(3),
+        )
         hasRotationVector = true
         smoothedQuaternion = if (smoothedQuaternion == Quaternion.IDENTITY) {
             q
@@ -178,10 +192,11 @@ class OrientationTracker(context: Context) {
     }
 
     private fun publish(timestampNanos: Long) {
-        val quaternion = when {
+        val deviceQuaternion = when {
             hasRotationVector -> smoothedQuaternion
             else -> accelerometerFallbackQuaternion()
         }
+        val quaternion = (deviceQuaternion * cameraFrame).normalized()
         val euler: EulerAngles = quaternion.toEulerDegrees()
         val referenceYaw = referenceYawDeg
         val relativeYaw = if (referenceYaw == null) 0f else wrapDegrees(euler.yawDeg - referenceYaw)
@@ -199,7 +214,8 @@ class OrientationTracker(context: Context) {
             angularSpeedRadPerSec = gyroMagnitude,
             stable = stability.stable,
             stableForMs = stability.stableForMs,
-            sensorAvailable = hasRotationVector,
+            sensorAvailable = hasRotationVector || fallbackReady,
+            usingFallback = !hasRotationVector && fallbackReady,
             timestampNanos = timestampNanos,
         )
     }
@@ -210,6 +226,7 @@ class OrientationTracker(context: Context) {
      * stable, so the UI marks the session as degraded.
      */
     private fun accelerometerFallbackQuaternion(): Quaternion {
+        if (rotationSensor != null) return smoothedQuaternion
         if (accelerometerMagnitude < 1e-3f || magneticValues.all { it == 0f }) {
             return smoothedQuaternion
         }
@@ -223,7 +240,10 @@ class OrientationTracker(context: Context) {
         val deviceX = Vec3(rotationMatrix[0], rotationMatrix[3], rotationMatrix[6])
         val deviceY = Vec3(rotationMatrix[1], rotationMatrix[4], rotationMatrix[7])
         val deviceZ = Vec3(rotationMatrix[2], rotationMatrix[5], rotationMatrix[8])
-        return Quaternion.fromBasis(deviceX, deviceY, deviceZ)
+        val quaternion = Quaternion.fromBasis(deviceX, deviceY, deviceZ)
+        fallbackReady = true
+        smoothedQuaternion = quaternion
+        return quaternion
     }
 
     private companion object {

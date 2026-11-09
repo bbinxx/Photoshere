@@ -98,11 +98,9 @@ data class Quaternion(val w: Float, val x: Float, val y: Float, val z: Float) {
         val forward = rotate(Vec3.FORWARD)
         val (yaw, pitch) = yawPitchFromDirection(forward)
         val right = rotate(Vec3(1f, 0f, 0f))
-        val horizontalRight = Vec3(right.x, right.y, 0f).normalized()
-        val horizontalForward = Vec3(forward.x, forward.y, 0f).normalized()
-        val roll = Math.toDegrees(
-            atan2(horizontalRight.dot(Vec3.UP), horizontalRight.dot(horizontalForward)).toDouble(),
-        ).toFloat()
+        val levelRight = directionFromYawPitch(yaw + 90f, 0f)
+        val levelUp = levelRight.cross(forward).normalized()
+        val roll = Math.toDegrees(atan2(-right.dot(levelUp), right.dot(levelRight)).toDouble()).toFloat()
         return EulerAngles(yaw, pitch, roll)
     }
 
@@ -118,12 +116,10 @@ data class Quaternion(val w: Float, val x: Float, val y: Float, val z: Float) {
             return Quaternion(cos(half), n.x * s, n.y * s, n.z * s)
         }
 
-        /** Android TYPE_ROTATION_VECTOR gives a rotation vector whose angle is the vector length. */
-        fun fromRotationVector(rx: Float, ry: Float, rz: Float): Quaternion {
-            val angle = sqrt(rx * rx + ry * ry + rz * rz)
-            if (angle < 1e-6f) return IDENTITY
-            val axis = Vec3(rx / angle, ry / angle, rz / angle)
-            return fromAxisAngle(axis, angle)
+        /** Android reports (axis * sin(angle/2), cos(angle/2)), not axis-angle. */
+        fun fromRotationVector(rx: Float, ry: Float, rz: Float, scalar: Float? = null): Quaternion {
+            val w = scalar ?: sqrt((1f - rx * rx - ry * ry - rz * rz).coerceAtLeast(0f))
+            return Quaternion(w, rx, ry, rz).normalized()
         }
 
         fun fromFloatArray(values: FloatArray): Quaternion {
@@ -138,8 +134,7 @@ data class Quaternion(val w: Float, val x: Float, val y: Float, val z: Float) {
          */
         fun fromYawPitchRoll(yawDeg: Float, pitchDeg: Float, rollDeg: Float = 0f): Quaternion {
             val direction = directionFromYawPitch(yawDeg, pitchDeg)
-            val horizontal = Vec3(direction.x, direction.y, 0f).normalized()
-            val right = horizontal.cross(Vec3.UP).normalized()
+            val right = directionFromYawPitch(yawDeg + 90f, 0f)
             val up = right.cross(direction).normalized()
             val roll = Math.toRadians(rollDeg.toDouble()).toFloat()
             val rolledUp = up * cos(roll) + right * sin(roll)

@@ -4,7 +4,9 @@ import com.bbinxx.photoshere.core.model.AlignmentResult
 import com.bbinxx.photoshere.core.model.CaptureTarget
 import com.bbinxx.photoshere.core.model.OrientationSnapshot
 import com.bbinxx.photoshere.core.model.angularDistanceDegrees
-import com.bbinxx.photoshere.core.model.shortestAngleDifferenceDegrees
+import com.bbinxx.photoshere.core.model.directionFromYawPitch
+import kotlin.math.atan2
+import kotlin.math.sqrt
 
 /**
  * Compares the real camera forward direction against the current target.
@@ -27,8 +29,15 @@ class AlignmentDetector(
             target.yawDeg,
             target.pitchDeg,
         )
-        val yawError = shortestAngleDifferenceDegrees(snapshot.relativeYawDeg, target.yawDeg)
-        val pitchError = target.pitchDeg - snapshot.pitchDeg
+        // Project the world target into the actual image frame. Euler yaw/pitch
+        // subtraction points the dot in the wrong screen direction when rolled
+        // into landscape, and loses direction near the poles.
+        val referenceYaw = snapshot.yawDeg - snapshot.relativeYawDeg
+        val worldTarget = directionFromYawPitch(referenceYaw + target.yawDeg, target.pitchDeg)
+        val local = snapshot.quaternion.inverse().rotate(worldTarget)
+        val yawError = Math.toDegrees(atan2(local.x.toDouble(), -local.z.toDouble())).toFloat()
+        val pitchError = Math.toDegrees(atan2(local.y.toDouble(),
+            sqrt((local.x * local.x + local.z * local.z).toDouble()))).toFloat()
         val aligned = angularError <= toleranceDegrees
         return AlignmentResult(
             aligned = aligned,
