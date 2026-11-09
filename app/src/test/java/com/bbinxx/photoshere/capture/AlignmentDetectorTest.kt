@@ -19,6 +19,19 @@ class AlignmentDetectorTest {
     )
 
     @Test
+    fun guideUsesImageAxesWhenPhoneIsRolled() {
+        val result = detector.evaluate(
+            OrientationSnapshot(
+                quaternion = com.bbinxx.photoshere.core.model.Quaternion.fromYawPitchRoll(0f, 0f, 90f),
+                yawDeg = 0f, relativeYawDeg = 0f, pitchDeg = 0f, sensorAvailable = true,
+            ),
+            CaptureTarget(1, 10f, 0f, TargetKind.HORIZON),
+        )
+        assertEquals(0f, result.yawErrorDeg, 0.01f)
+        assertEquals(10f, result.pitchErrorDeg, 0.01f)
+    }
+
+    @Test
     fun alignedAndStableWhenOrientationMatches() {
         val result = detector.evaluate(
             snapshot = OrientationSnapshot(

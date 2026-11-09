@@ -131,7 +131,7 @@ class SphereView(context: Context) : GLSurfaceView(context), SensorEventListener
 
     override fun onSensorChanged(event: SensorEvent) {
         if (!gyroEnabled) return
-        val q = Quaternion.fromRotationVector(event.values[0], event.values[1], event.values[2])
+        val q = Quaternion.fromRotationVector(event.values[0], event.values[1], event.values[2], event.values.getOrNull(3))
             .normalized()
         latestQuaternion = q
         val base = baseQuaternion ?: run {

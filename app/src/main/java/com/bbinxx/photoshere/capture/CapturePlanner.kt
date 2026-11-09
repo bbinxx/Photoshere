@@ -88,6 +88,13 @@ object CapturePlanner {
         return targets
     }
 
+    /** Suggestions can be visited in any order; choose the nearest gap. */
+    fun nearestUncaptured(targets: List<CaptureTarget>, yaw: Float, pitch: Float): Int? =
+        targets.indices.filter { targets[it].status != com.bbinxx.photoshere.core.model.TargetStatus.CAPTURED }
+            .minByOrNull { com.bbinxx.photoshere.core.model.angularDistanceDegrees(
+                yaw, pitch, targets[it].yawDeg, targets[it].pitchDeg,
+            ) }
+
     private fun ringCount(pitchDeg: Float, horizontalStepDeg: Float): Int {
         val latitudeScale = cos(Math.toRadians(pitchDeg.toDouble())).toFloat().coerceAtLeast(0.12f)
         val raw = ceil(360.0 * latitudeScale / horizontalStepDeg).toInt()

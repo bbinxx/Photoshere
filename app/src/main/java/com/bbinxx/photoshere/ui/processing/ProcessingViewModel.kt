@@ -122,14 +122,6 @@ class ProcessingViewModel(
                 }
             }
 
-            if (!settings.saveOriginals && (exportedUri != null || !settings.autoExport)) {
-                withContext(Dispatchers.IO) {
-                    session.images.forEach { image ->
-                        File(image.filePath).delete()
-                    }
-                }
-            }
-
             mutableState.update {
                 it.copy(
                     running = false,

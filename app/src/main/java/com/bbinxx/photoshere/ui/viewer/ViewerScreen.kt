@@ -49,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -121,6 +122,7 @@ fun ViewerScreen(recordId: String, onBack: () -> Unit) {
 @Composable
 private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
     val context = LocalContext.current
+    val locale = LocalConfiguration.current.locales[0]
     val app = context.applicationContext as PhotoSphereApplication
     val exporter = app.container.exporter
     val gallery = app.container.gallery
@@ -133,8 +135,10 @@ private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
     var gyroEnabled by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
 
+    var imageLoaded by remember(record.filePath) { mutableStateOf(false) }
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = record.filePath) {
         value = withContext(Dispatchers.IO) { decodeForViewer(record.filePath) }
+        imageLoaded = true
     }
 
     LaunchedEffect(bitmap) {
@@ -162,7 +166,12 @@ private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (bitmap == null) {
+        if (imageLoaded && bitmap == null) {
+            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Unable to open this image", color = Color.White)
+                TextButton(onClick = onBack) { Text("Back") }
+            }
+        } else if (!imageLoaded) {
             CircularProgressIndicator(
                 color = Aurora,
                 modifier = Modifier.align(Alignment.Center),
@@ -329,7 +338,7 @@ private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
                     )
                     Text(
                         "Created: ${
-                            SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())
+                            SimpleDateFormat("d MMM yyyy, HH:mm", locale)
                                 .format(Date(record.createdAtMs))
                         }",
                     )

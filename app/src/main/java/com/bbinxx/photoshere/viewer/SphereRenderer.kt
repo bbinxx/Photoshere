@@ -38,6 +38,7 @@ class SphereRenderer : GLSurfaceView.Renderer {
     @Volatile
     private var pendingBitmap: Bitmap? = null
 
+    private var currentBitmap: Bitmap? = null
     private var textureId = 0
     private var program = 0
     private var positionHandle = -1
@@ -66,6 +67,8 @@ class SphereRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        textureId = 0
+        if (pendingBitmap == null) pendingBitmap = currentBitmap
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glDisable(GLES30.GL_CULL_FACE)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
@@ -85,7 +88,7 @@ class SphereRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         uploadPendingTexture()
 
-        yawDeg += (targetYawDeg - yawDeg) * SMOOTHING
+        yawDeg += com.bbinxx.photoshere.core.model.wrapDegrees(targetYawDeg - yawDeg) * SMOOTHING
         pitchDeg += (targetPitchDeg - pitchDeg) * SMOOTHING
         fovDeg += (targetFovDeg - fovDeg) * SMOOTHING
         pitchDeg = pitchDeg.coerceIn(-88f, 88f)
@@ -159,7 +162,8 @@ class SphereRenderer : GLSurfaceView.Renderer {
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_REPEAT)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
         GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
-        bitmap.recycle()
+        if (currentBitmap !== bitmap) currentBitmap?.recycle()
+        currentBitmap = bitmap
     }
 
     private fun createMesh() {

@@ -1,17 +1,26 @@
 package com.bbinxx.photoshere.camera
 
 import android.content.Context
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.util.Log
 import android.util.Size
 import android.util.SizeF
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.DynamicRange
 import androidx.camera.core.CameraFilter
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
@@ -23,6 +32,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.Observer
 import com.bbinxx.photoshere.core.model.CameraLens
 import com.bbinxx.photoshere.core.model.FlashSetting
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,12 +48,15 @@ import kotlin.math.atan
  * CameraX implementation. The whole Photo Sphere session is bound to one
  * physical camera id so intrinsics and colour response stay consistent.
  */
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 class CameraXController(
     context: Context,
 ) : CameraController {
 
     private val appContext = context.applicationContext
     private val mainExecutor = ContextCompat.getMainExecutor(appContext)
+
+    var onCaptureStarted: (() -> Unit)? = null
 
     private val mutableState = MutableStateFlow(CameraState())
     override val state: StateFlow<CameraState> = mutableState.asStateFlow()
@@ -57,6 +70,9 @@ class CameraXController(
     private var selectedCameraId: String? = null
     private var displayRotation: Int = 0
 
+    @Volatile private var aeConverged = false
+    @Volatile private var awbConverged = false
+    private var locksApplied = false
     private var exposureLock = true
     private var focusLock = true
     private var whiteBalanceLock = true
@@ -66,17 +82,35 @@ class CameraXController(
 
 
     fun setCaptureLocks(exposure: Boolean, focus: Boolean, whiteBalance: Boolean = true) {
+        val changed = exposureLock != exposure || focusLock != focus || whiteBalanceLock != whiteBalance
         exposureLock = exposure
         focusLock = focus
         whiteBalanceLock = whiteBalance
+        if (changed) {
+            locksApplied = false
+            camera?.let { bound ->
+                Camera2CameraControl.from(bound.cameraControl).clearCaptureRequestOptions()
+                if (!focus) bound.cameraControl.cancelFocusAndMetering()
+            }
+        }
     }
 
     override suspend fun bind(previewView: PreviewView, lifecycleOwner: LifecycleOwner) {
         this.previewView = previewView
         this.lifecycleOwner = lifecycleOwner
         this.displayRotation = previewView.display?.rotation ?: displayRotation
-        val cameraProvider = awaitProvider()
-        bindInternal(cameraProvider)
+        try {
+            val cameraProvider = awaitProvider()
+            bindInternal(cameraProvider)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.e(TAG, "Camera provider initialisation failed", error)
+            mutableState.value = mutableState.value.copy(
+                ready = false, busy = false,
+                error = error.message ?: "Camera initialisation failed. Close capture and try again.",
+            )
+        }
     }
 
     override fun unbind() {
@@ -93,16 +127,24 @@ class CameraXController(
     }
 
     override suspend fun capture(outputFile: File): File {
+        check(!mutableState.value.busy) { "Camera is already capturing" }
+        check(mutableState.value.ready) { "Camera is not ready" }
         val capture = imageCapture ?: throw IllegalStateException("Camera is not initialised")
+        val captureStarted = onCaptureStarted
         outputFile.parentFile?.mkdirs()
         mutableState.value = mutableState.value.copy(busy = true)
         try {
+            applyConvergedLocks()
             return suspendCancellableCoroutine { continuation ->
                 val options = ImageCapture.OutputFileOptions.Builder(outputFile).build()
                 capture.takePicture(
                     options,
                     mainExecutor,
                     object : ImageCapture.OnImageSavedCallback {
+                        override fun onCaptureStarted() {
+                            captureStarted?.invoke()
+                        }
+
                         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                             if (continuation.isActive) continuation.resume(outputFile)
                         }
@@ -190,7 +232,8 @@ class CameraXController(
                 },
                 mainExecutor,
             )
-            continuation.invokeOnCancellation { future.cancel(true) }
+            // The provider future is shared process-wide. Cancelling a screen
+            // must not cancel camera initialisation for the next screen.
         }
     }
 
@@ -199,6 +242,9 @@ class CameraXController(
         val view = previewView ?: return@withContext
         try {
             removeObservers()
+            aeConverged = false
+            awbConverged = false
+            locksApplied = false
             cameraProvider.unbindAll()
 
             val cameraInfos = cameraProvider.availableCameraInfos
@@ -220,6 +266,7 @@ class CameraXController(
                 .build()
 
             val previewBuilder = Preview.Builder()
+                .setDynamicRange(DynamicRange.SDR)
                 .setTargetRotation(displayRotation)
                 .setResolutionSelector(resolutionSelector)
             val imageCaptureBuilder = ImageCapture.Builder()
@@ -229,7 +276,24 @@ class CameraXController(
                 .setResolutionSelector(resolutionSelector)
                 .setFlashMode(ImageCapture.FLASH_MODE_OFF)
 
-            applyCaptureConsistency(previewBuilder, imageCaptureBuilder, cameraInfos, targetId)
+            // Observe automatic metering without overriding vendor colour/focus
+            // defaults. Locking AWB before convergence can produce tinted frames.
+            Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(
+                object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(session: CameraCaptureSession,
+                        request: CaptureRequest, result: TotalCaptureResult) {
+                        aeConverged = result[CaptureResult.CONTROL_AE_STATE] in listOf(
+                            CaptureResult.CONTROL_AE_STATE_CONVERGED,
+                            CaptureResult.CONTROL_AE_STATE_LOCKED,
+                            CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED,
+                        )
+                        awbConverged = result[CaptureResult.CONTROL_AWB_STATE] in listOf(
+                            CaptureResult.CONTROL_AWB_STATE_CONVERGED,
+                            CaptureResult.CONTROL_AWB_STATE_LOCKED,
+                        )
+                    }
+                },
+            )
 
             val newPreview = previewBuilder.build()
             val newImageCapture = imageCaptureBuilder.build()
@@ -266,7 +330,10 @@ class CameraXController(
             )
             Log.i(TAG, "Bound camera $targetId (${selectedLens?.label}) fov=${selectedLens?.horizontalFovDeg}x${selectedLens?.verticalFovDeg}")
 
+            setFlash(mutableState.value.flash)
             observeCamera(boundCamera, owner)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
             Log.e(TAG, "Camera bind failed", error)
             mutableState.value = mutableState.value.copy(
@@ -277,42 +344,50 @@ class CameraXController(
         }
     }
 
-    private fun applyCaptureConsistency(
-        previewBuilder: Preview.Builder,
-        imageCaptureBuilder: ImageCapture.Builder,
-        cameraInfos: List<androidx.camera.core.CameraInfo>,
-        targetId: String,
-    ) {
-        val info = cameraInfos.firstOrNull { Camera2CameraInfo.from(it).cameraId == targetId } ?: return
-        val camera2Info = Camera2CameraInfo.from(info)
-        val afModes = camera2Info.getCameraCharacteristic(
-            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES,
-        )
-        val previewInterop = Camera2Interop.Extender(previewBuilder)
-        val captureInterop = Camera2Interop.Extender(imageCaptureBuilder)
-
-        // Preview keeps AE/AWB running so the viewfinder converges. The lock is
-        // applied only to the still request, freezing the current metered state
-        // for that frame instead of starting from an arbitrary locked value.
-        if (exposureLock) {
-            captureInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
+    private suspend fun applyConvergedLocks() {
+        if (locksApplied) return
+        val bound = camera ?: return
+        if (focusLock) {
+            val action = FocusMeteringAction.Builder(
+                SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f),
+                FocusMeteringAction.FLAG_AF,
+            ).disableAutoCancel().build()
+            if (bound.cameraInfo.isFocusMeteringSupported(action)) {
+                suspendCancellableCoroutine<Unit> { continuation ->
+                    val future = bound.cameraControl.startFocusAndMetering(action)
+                    future.addListener({
+                        runCatching { future.get() }.onFailure { Log.w(TAG, "Focus lock unavailable", it) }
+                        if (continuation.isActive) continuation.resume(Unit)
+                    }, mainExecutor)
+                    continuation.invokeOnCancellation { future.cancel(false) }
+                }
+            }
         }
-        if (whiteBalanceLock) {
-            captureInterop.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+        val info = Camera2CameraInfo.from(bound.cameraInfo)
+        val options = CaptureRequestOptions.Builder()
+        if (exposureLock && aeConverged &&
+            info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true) {
+            options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, true)
         }
-        if (focusLock && afModes?.contains(CaptureRequest.CONTROL_AF_MODE_OFF) == true) {
-            // Fixed infinity focus is appropriate for landscape spheres and keeps
-            // consecutive frames consistent. Users can disable it in settings.
-            previewInterop.setCaptureRequestOption(
-                CaptureRequest.CONTROL_AF_MODE,
-                CaptureRequest.CONTROL_AF_MODE_OFF,
-            )
-            previewInterop.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
-            captureInterop.setCaptureRequestOption(
-                CaptureRequest.CONTROL_AF_MODE,
-                CaptureRequest.CONTROL_AF_MODE_OFF,
-            )
-            captureInterop.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
+        if (whiteBalanceLock && awbConverged &&
+            info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true) {
+            options.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, true)
+        }
+        val control = Camera2CameraControl.from(bound.cameraControl)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val future = control.setCaptureRequestOptions(options.build())
+            future.addListener({
+                try {
+                    future.get()
+                    locksApplied = aeConverged && awbConverged
+                    if (continuation.isActive) continuation.resume(Unit)
+                } catch (error: Exception) {
+                    // An unsupported lock should leave CameraX in automatic mode.
+                    control.clearCaptureRequestOptions()
+                    Log.w(TAG, "Metering lock unavailable; using automatic metering", error)
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
+            }, mainExecutor)
         }
     }
 
@@ -331,9 +406,11 @@ class CameraXController(
                 androidx.camera.core.CameraState.Type.PENDING_OPEN,
                 -> mutableState.value = mutableState.value.copy(ready = false)
 
-                androidx.camera.core.CameraState.Type.OPEN,
                 androidx.camera.core.CameraState.Type.OPENING,
-                -> mutableState.value = mutableState.value.copy(ready = true)
+                -> mutableState.value = mutableState.value.copy(ready = false)
+
+                androidx.camera.core.CameraState.Type.OPEN,
+                -> mutableState.value = mutableState.value.copy(ready = true, error = null)
             }
             cameraState.error?.let { error ->
                 mutableState.value = mutableState.value.copy(
@@ -432,7 +509,7 @@ class CameraXController(
         }
         val sensorWidthFov = 2.0 * atan(sensorSize.width / (2.0 * focal)) * 180.0 / Math.PI
         val sensorHeightFov = 2.0 * atan(sensorSize.height / (2.0 * focal)) * 180.0 / Math.PI
-        return if (displayRotation == 0 || displayRotation == 180) {
+        return if (displayRotation == android.view.Surface.ROTATION_0 || displayRotation == android.view.Surface.ROTATION_180) {
             // Sensor is landscape; portrait display swaps the axes.
             sensorHeightFov.toFloat() to sensorWidthFov.toFloat()
         } else {
