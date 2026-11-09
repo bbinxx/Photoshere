@@ -90,6 +90,15 @@ capture photographs or copies previously exported to Photos or another folder.
 The viewer returns after deletion. A refreshed gallery does not rediscover the
 deleted JPEG. Deletion errors are shown rather than reported as success.
 
+### Delete an unfinished capture
+
+On Home, each **Continue capturing** entry has a trash button. Confirm **Delete**
+to permanently remove that capture session, its progress and its source photos.
+Choose **Cancel** to keep capturing later. This action does not delete saved
+sphere JPEGs, exported copies or other sessions. Sessions containing only rejected
+photos are also listed so they can be retried or deleted. Deletion errors remain
+visible and can be retried.
+
 ### Automatic capture retries
 
 After any capture attempt, including a rejected or failed image, automatic
@@ -199,7 +208,7 @@ Device tests, leaving the APKs installed afterward:
 ### Latest verified result
 
 On 2026-11-10, debug assembly and lint passed, along with **43 JVM tests and
-10 device tests**, with no failures. The connected M2101K6P did not expose an
+11 device tests**, with no failures. The connected M2101K6P did not expose an
 ultra-wide option to this application, so actual 0.5× capture remains unverified
 on hardware that exposes that lens. Main-camera capture and preview/JPEG ratio
 matching passed. Real-world full-sphere seam quality remains a manual check.
@@ -231,6 +240,8 @@ Device regressions cover:
 - Synthetic full-sphere projection including both poles and independent XMP
   parsing with AndroidX ExifInterface.
 - URI export, concurrent gallery saves, and preservation after failed replacement.
+- Unfinished-session Delete/Cancel, rejected-only captures, source removal, and
+  preservation of other sessions and exported files.
 - Viewer delete/cancel confirmation, return after deletion, durable gallery removal,
   and preservation of original photos/exported copies.
 - GPU sphere rendering before and after recreating the EGL context.
@@ -263,6 +274,9 @@ parallax, moving subjects, and portrait/landscape changes during capture.
 | 8. Optimization and testing | In progress; real-world quality, calibration, thermal/memory profiling remain |
 
 ### Recent changes
+
+- Added confirmed deletion of unfinished captures directly from Home, including
+  rejected-only sessions, without touching saved/exported spheres.
 
 - Explicit manual shutter now accepts readable photos and advances instead of
   repeatedly rejecting the same area; overridden warnings are saved in metadata.
@@ -417,7 +431,8 @@ The stitched photo is the main remaining quality gap:
 - The CPU stitcher uses memory proportional to output area. Profile large outputs,
   thermal behavior and long sessions on OnePlus 13 and other devices.
 - Viewer textures are downsampled to a maximum long edge of 4096 pixels.
-- Add a user-controlled source cleanup workflow and production release packaging.
+- Add source cleanup for completed gallery spheres and production release packaging.
+  Unfinished sessions already support user-confirmed deletion.
 
 Aiming and projection geometry are improved, but these changes do not remove
 parallax from translating the camera or promise GCam-level stitching quality.
