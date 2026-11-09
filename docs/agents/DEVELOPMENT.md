@@ -95,9 +95,11 @@ local `dev` is identical to `origin/dev`.
   forcing unrelated sky/ground photographs to the same overall brightness.
 - Use background processing, cancellation and bounded image memory. Keep errors
   visible and preserve captures if processing/export fails.
-- The current engine is sensor-based with feather blending. Do not claim feature
-  refinement, multiband seams, distortion correction, or GCam-level results until
-  implemented and tested. OpenCV is available for appropriate improvements.
+- The current engine uses sensor-seeded, guarded local ORB/RANSAC rotation
+  refinement followed by feather blending. Do not call this global bundle
+  adjustment or claim multiband seams, distortion correction, seamless output or
+  GCam-level quality. Weak/inconsistent features must retain sensor poses with
+  visible fallback reporting. OpenCV supplies feature and matrix operations.
 - Viewer behavior must remain spherical (OpenGL), including texture restoration
   after context recreation. JPEG exports include GPano XMP metadata.
 
@@ -136,3 +138,16 @@ Avoid tests unintentionally removing the app at the end of the run.
   or cloud processing. Preserve offline behavior and user-controlled exports.
 - Keep `.gradle`, `.kotlin`, SDK paths, build artifacts and device images out of
   commits. Do not commit local secrets or private captures.
+
+## APK automation
+
+- Keep `.github/workflows/android-apk.yml` working for `dev`, feature branches,
+  pull requests, manual runs and version tags. Ordinary builds expose installable
+  debug and clearly labelled unsigned release APK artifacts.
+- Production releases require the four documented `ANDROID_*` signing secrets;
+  never silently use a debug key or publish an unsigned APK as a signed release.
+- Signing secrets belong only in the trusted tag release job, never PR jobs.
+  Keep keys in runner temporary storage, disable signed configuration caching,
+  verify the APK signature/checksum and remove the temporary key afterward.
+- Do not push tags, publish releases, configure secrets or run a remote workflow
+  without authorization. Adding a workflow is not evidence that GitHub ran it.

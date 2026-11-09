@@ -378,8 +378,8 @@ private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit, onDelet
                         },
                     )
                     Text(
-                        "Rendering uses a sensor-pose spherical projection. Lens distortion " +
-                            "correction and feature-based pose refinement are not applied.",
+                        "For cleaner stitching, overlap neighbouring views and rotate around " +
+                            "the camera lens rather than moving the phone through the scene.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Muted,
                     )

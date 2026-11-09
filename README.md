@@ -5,8 +5,8 @@ A native Android app for capturing, stitching, viewing, and sharing full
 
 **Current status:** free-direction capture, spherical coverage guidance, camera
 controls, gallery/export, and the interactive viewer are implemented. Stitching
-works from recorded sensor poses but still needs visual pose refinement and
-better seam handling. It is not yet equivalent to Google Camera's stitching
+uses sensor-seeded OpenCV visual rotation refinement, but still needs global
+pose optimization and better seam handling. It is not yet equivalent to Google Camera's stitching
 quality. The project is under active development.
 
 The original requirements are preserved in
@@ -18,6 +18,7 @@ product; this README describes the implemented application and remaining work.
 - [Capture workflow](#capture-workflow)
 - [Implemented features](#implemented-features)
 - [Build and install](#build-and-install)
+- [GitHub Actions APK builds and releases](#github-actions-apk-builds-and-releases)
 - [Testing and verification](#testing-and-verification)
 - [Development progress](#development-progress)
 - [Architecture](#architecture)
@@ -120,7 +121,7 @@ be marked completed.
 | Guidance | Quaternion orientation, gyro stability detection, nearest-gap suggestions, manual and automatic capture |
 | Coverage | Accepted-image camera footprints on an equal-area sphere, duplicate-area checks, explicit zenith/nadir checks |
 | Image validation | OpenCV sharpness/exposure checks with a bitmap fallback |
-| Stitching | EXIF normalization, lens-specific spherical inverse projection, bilinear sampling, feather blending, overlap exposure compensation |
+| Stitching | EXIF normalization, guarded ORB/RANSAC visual rotation refinement, lens-specific spherical projection, bilinear sampling, feather blending, overlap exposure compensation |
 | Export | 2:1 JPEG, GPano XMP, MediaStore save, Storage Access Framework export, Android sharing |
 | Viewer | OpenGL ES 3 inside-facing sphere, drag, pinch zoom, reset, optional sensor viewing |
 | Gallery | Thumbnails, import, rename, delete, share, export, saved capture sessions |
@@ -187,8 +188,108 @@ adb shell am start -W -n com.bbinxx.photoshere/.MainActivity
 ```
 
 The app itself works offline. A first development build may need network access
-to download Gradle and dependencies. Release signing/distribution is not set up
-as a production release workflow.
+to download Gradle and dependencies. Release signing and GitHub distribution are
+configured by the workflow below; signing secrets must be supplied separately.
+
+## GitHub Actions APK builds and releases
+
+Workflow: [.github/workflows/android-apk.yml](.github/workflows/android-apk.yml).
+It uses the checked-in Gradle wrapper, Temurin JDK 27, SDK platform 37, and
+build-tools 37.0.0. Ordinary build jobs have read-only repository permissions.
+The release job alone receives `contents: write` permission.
+
+### Download an APK from a build
+
+The workflow runs for pushes to `dev`, `main`, and `feature/**`, pull requests
+into `dev`/`main`, version tags, and **Actions → Android APK → Run workflow**.
+It runs JVM tests/lint and builds both variants. Open the completed run's
+**Artifacts** section:
+
+| Artifact | Use |
+| --- | --- |
+| `PhotoSphere-debug-<run>` | Extract and install the debug APK; no signing secrets needed |
+| `PhotoSphere-release-unsigned-<run>` | Release-mode build for inspection or external signing; cannot be installed until signed |
+| `verification-reports-<run>` | JVM test and lint reports, including reports retained on failed checks |
+| `PhotoSphere-signed-release-v…` | Installable release APK and checksum from a successful signed tag release |
+
+Ordinary APK/report artifacts are retained for 14 days; signed release artifacts
+for 30 days. Published GitHub Release assets are separate from Actions artifacts.
+The artifact contains a universal APK with the configured `arm64-v8a` and
+`x86_64` libraries. Physical camera/device tests are run separately; the hosted
+workflow does not claim to validate real-camera quality.
+
+### Configure release signing once
+
+Create or reuse a stable Android release keystore. Keep it and its passwords
+outside this repository and back them up securely. For example, to create a key:
+
+```bash
+keytool -genkeypair -keystore photosphere-release.jks -alias photosphere \
+  -keyalg RSA -keysize 3072 -validity 10000
+```
+
+Add these **repository Actions secrets** in GitHub Settings → Secrets and
+variables → Actions:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64 contents of the complete keystore file |
+| `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
+| `ANDROID_KEY_ALIAS` | Alias of the release signing key |
+| `ANDROID_KEY_PASSWORD` | Signing key password |
+
+On Linux, `base64 -w 0 photosphere-release.jks` produces the first value. Do not
+paste the keystore or passwords into issues, source files, logs, or chat.
+Keystores and local keystore properties are ignored by Git.
+
+### Publish a versioned GitHub Release
+
+After the completed feature is merged into `dev` and signing secrets are set:
+
+```bash
+git switch dev
+git push origin dev
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+A pushed `v*` tag first passes the normal build job. The release job verifies that
+its commit belongs to remote `dev`, decodes the keystore only into runner temporary
+storage, builds with release signing, verifies the APK with `apksigner`, and
+publishes `PhotoSphere-release.apk` plus `SHA256SUMS.txt` to that tag's GitHub
+Release. The version name comes from the tag without `v`; the version code uses
+the workflow run number. Missing signing secrets fail the release job rather
+than publishing an unsigned APK. Reruns update the same release assets.
+
+Use the same signing key for updates and keep version codes increasing.
+Debug and release certificates normally differ, so installing one over the other
+can fail; export important captures before uninstalling any existing app.
+No production key has been generated or configured by this code change.
+
+### Local release builds
+
+Without signing environment variables:
+
+```bash
+./gradlew :app:assembleRelease
+# app/build/outputs/apk/release/app-release-unsigned.apk
+```
+
+To sign locally, provide all four environment variables `RELEASE_STORE_FILE`,
+`RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, and `RELEASE_KEY_PASSWORD`, then run:
+
+```bash
+./gradlew --no-configuration-cache :app:assembleRelease
+# app/build/outputs/apk/release/app-release.apk
+```
+
+Supply passwords through your local secret environment rather than checking them
+into scripts. Optional `APP_VERSION_NAME` and `APP_VERSION_CODE` environment
+variables override the default version. Signed CI builds disable configuration
+caching and remove the temporary keystore afterward.
+
+Reference: [GitHub's Gradle workflow guidance](https://docs.github.com/en/actions/tutorials/build-and-test-code/java-with-gradle)
+and the [official artifact action](https://github.com/actions/upload-artifact).
 
 ## Testing and verification
 
@@ -207,11 +308,18 @@ Device tests, leaving the APKs installed afterward:
 
 ### Latest verified result
 
-On 2026-11-10, debug assembly and lint passed, along with **43 JVM tests and
-11 device tests**, with no failures. The connected M2101K6P did not expose an
+On 2026-11-10, debug/release assembly, lint and **43 JVM tests** passed. The
+**15-device-test suite passed** for the visual-refinement implementation. A later
+rerun after additional malformed-data/numeric guards was blocked by USB
+disconnection; those final device assertions still need to be rerun on the
+current build. The connected M2101K6P did not expose an
 ultra-wide option to this application, so actual 0.5× capture remains unverified
 on hardware that exposes that lens. Main-camera capture and preview/JPEG ratio
-matching passed. Real-world full-sphere seam quality remains a manual check.
+matching passed. The signed release path and version overrides were verified
+using a temporary test keystore; no production signing secrets were used. Workflow
+YAML and embedded Bash syntax were checked locally, but GitHub execution and
+publishing have not been run from this workspace. Real-world full-sphere seam
+quality remains a manual check.
 
 ### Automated coverage
 
@@ -237,6 +345,9 @@ Device regressions cover:
 - Preview aspect ratio matching the EXIF-normalized JPEG; ultra-wide capture
   is also exercised when the device exposes a supported ultra-wide option.
 - Real sensor output and comparison against Android's rotation-vector matrix.
+- OpenCV recovery of known rotations with outliers, actual ORB/JPEG correction of
+  small injected sensor errors, and safe fallback for featureless/degenerate views
+  and large sensor disagreements.
 - Synthetic full-sphere projection including both poles and independent XMP
   parsing with AndroidX ExifInterface.
 - URI export, concurrent gallery saves, and preservation after failed replacement.
@@ -268,12 +379,17 @@ parallax, moving subjects, and portrait/landscape changes during capture.
 | 2. Camera | Implemented: preview, source JPEG capture, lifecycle, supported lens selection and metering |
 | 3. Sensor tracking | Implemented and covered by mathematical/device regressions |
 | 4. Guided spherical capture | Implemented: free-direction start, nearest-gap guidance, stability and coverage model |
-| 5. Stitching | Partial: spherical output works; feature-based pose refinement and advanced seam handling remain |
+| 5. Stitching | Partial: local visual rotation refinement and spherical output work; global optimization and advanced seam handling remain |
 | 6. Viewer | Implemented; GPU rendering/context-recreation regression included |
 | 7. Export and gallery | Implemented; GPano parsing/export and gallery regressions included |
 | 8. Optimization and testing | In progress; real-world quality, calibration, thermal/memory profiling remain |
 
 ### Recent changes
+
+- Added GitHub Actions debug/unsigned release APK artifacts and signed GitHub
+  Releases from version tags, with secret-based signing and checksum verification.
+- Integrated conservative OpenCV ORB/RANSAC rotation refinement before projection
+  to reduce small inter-frame pose errors; sensor fallback remains explicit.
 
 - Added confirmed deletion of unfinished captures directly from Home, including
   rejected-only sessions, without touching saved/exported spheres.
@@ -318,7 +434,7 @@ app/src/main/java/com/bbinxx/photoshere/
 
 Camera, sensor, storage, and stitching responsibilities are kept separate from
 Compose rendering. ViewModels expose StateFlow, and background work uses
-coroutines. OpenCV is initialized lazily for image validation; it is not required
+coroutines. OpenCV is initialized lazily for image validation and stitching; it is not required
 to initialize during every app launch.
 
 ## Algorithms and camera geometry
@@ -373,20 +489,38 @@ Stitching independently reports real output pixel coverage.
 ### Stitching and exposure
 
 1. Read source JPEGs, normalize EXIF orientation, and decode bounded working copies.
-2. Construct each output equirectangular ray in world coordinates.
-3. Transform it into each source camera using its saved quaternion and FOV.
-4. Bilinearly sample valid source pixels and feather their contributions.
-5. Balance exposure from shared scene points in overlapping images. The median
+2. Detect ORB features on reduced copies, then match up to three previously seen
+   nearby views with Hamming-distance ratio filtering and unique target matches.
+3. Estimate a RANSAC homography in calibrated camera coordinates. Require at least
+   24 spatially distributed inliers and a 45% inlier ratio. Project the homography
+   to a proper rotation with SVD, converting OpenCV image axes to the app's camera
+   axes. Reject a median bearing error above 0.75°, a 90th-percentile error above
+   1.5°, or a proposed pose correction above 8° relative to the saved sensor pose.
+4. Anchor the first view and apply the strongest accepted local visual rotation
+   to later working poses. Featureless, inconsistent, or unsupported views retain
+   their original sensor poses, and processing reports the fallback count.
+5. Construct each equirectangular output ray, transform it through the working
+   camera pose/FOV, bilinearly sample source pixels, and feather contributions.
+6. Balance exposure from shared scene points in overlapping images. The median
    reference/source luminance ratio rejects many outliers; clipped/dark samples
    are excluded, at least 32 valid observations are required, and gain is bounded
    to 0.7–1.4. Without sufficient overlap, gain remains 1.
-6. Encode a 2:1 JPEG with GPano XMP metadata and store it in the gallery.
+7. Encode a 2:1 JPEG with GPano XMP metadata and store it in the gallery.
 
-Unobserved areas are not filled with invented sky/ground. The current pipeline
-uses sensor poses. An ORB/RANSAC helper exists but is **not integrated into global
-pose refinement**. Current blending is feathering, not multiband or graph-cut
-seam optimization. Stitching runs off the main thread with cancellation checks
-and out-of-memory handling.
+Only five feature sets are cached at once, and their native descriptors are
+released before the large panorama accumulators are allocated. Original source
+photos and saved sensor metadata are preserved. Stitching runs off the main
+thread with cancellation checks and out-of-memory handling.
+
+Unobserved areas are not filled with invented sky/ground. Visual alignment is
+local, sensor-guarded rotation refinement, **not global bundle adjustment**.
+Current blending remains feathering, not multiband or graph-cut seam optimization.
+Planar parallax can still resemble a small rotation, and disconnected/featureless
+views and closing the full 360° loop remain difficult. These changes reduce a
+source of seams; they do not guarantee a seamless panorama.
+
+API references: [OpenCV homography/RANSAC](https://docs.opencv.org/4.11.0/javadoc/org/opencv/calib3d/Calib3d.html)
+and [OpenCV SVD/matrix operations](https://docs.opencv.org/4.11.0/javadoc/org/opencv/core/Core.html).
 
 ## Storage, permissions, and privacy
 
@@ -420,8 +554,8 @@ manifest; device/OS backup behavior is separate from the app's offline workflow.
 
 The stitched photo is the main remaining quality gap:
 
-- Sensor drift/magnetic disturbance can offset neighbouring frames. Integrate
-  visual feature matching, robust camera rotation estimation and global refinement.
+- Small sensor errors now receive guarded visual rotation refinement. Large drift,
+  weak matches and accumulated loop error still need global pose optimization.
 - Add lens distortion calibration/correction, especially for ultra-wide images.
 - Add better seams, multiband blending and moving-object/ghosting handling.
 - Calibrate actual JPEG FOV and logical-camera crop on each target phone.
