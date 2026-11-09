@@ -60,4 +60,30 @@ class SphericalCoverageTest {
         assertTrue(model.contains(0f, 0f))
         assertFalse(model.contains(180f, 0f))
     }
+
+    @Test fun slightDriftDoesNotCountAsAnotherUsefulPhoto() {
+        val model = SphericalCoverage(0f)
+        model.record(image(0f, 0f, 60f))
+        for (yaw in listOf(-1f, -0.2f, 0f, 0.2f, 1f)) {
+            assertFalse(model.addsCoverage(Quaternion.fromYawPitchRoll(yaw, 0f), 60f, 60f))
+        }
+        assertTrue(model.addsCoverage(Quaternion.fromYawPitchRoll(30f, 0f), 60f, 60f))
+    }
+
+    @Test fun duplicateFilteringStillAllowsFullCoverageAndFinalGapFilling() {
+        val model = SphericalCoverage(0f)
+        val planned = CapturePlanner.plan(65f, 50f, 35)
+        for (target in planned) {
+            val pose = Quaternion.fromYawPitchRoll(target.yawDeg, target.pitchDeg)
+            if (model.addsCoverage(pose, 65f, 50f)) model.record(image(target.yawDeg, target.pitchDeg)
+                .copy(horizontalFovDeg = 65f, verticalFovDeg = 50f))
+        }
+        repeat(100) {
+            val gap = model.nearestGap(0f, 0f) ?: return@repeat
+            val pose = Quaternion.fromYawPitchRoll(gap.first, gap.second)
+            assertTrue("A genuine gap must remain capturable", model.addsCoverage(pose, 65f, 50f))
+            model.record(image(gap.first, gap.second).copy(horizontalFovDeg = 65f, verticalFovDeg = 50f))
+        }
+        assertTrue(model.complete)
+    }
 }

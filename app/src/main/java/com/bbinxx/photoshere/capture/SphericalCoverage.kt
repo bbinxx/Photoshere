@@ -3,6 +3,7 @@ package com.bbinxx.photoshere.capture
 import com.bbinxx.photoshere.core.model.*
 import kotlin.math.abs
 import kotlin.math.asin
+import kotlin.math.acos
 import kotlin.math.tan
 
 /** Equal-area sphere samples, plus explicit poles. Coverage comes from accepted
@@ -21,7 +22,8 @@ class SphericalCoverage(private val referenceYawDeg: Float) {
     private val rays = samples.map { directionFromYawPitch(it.first + referenceYawDeg, it.second) }
     private val covered = BooleanArray(rays.size)
     private val frames = mutableListOf<Frame>()
-    private data class Frame(val inverse: Quaternion, val halfWidth: Float, val halfHeight: Float)
+    private data class Frame(val inverse: Quaternion, val halfWidth: Float, val halfHeight: Float,
+        val forward: Vec3, val minimumSpacingDeg: Float)
 
     val fraction: Float get() {
         val area = covered.take(covered.size - 2).count { it }.toFloat() / (covered.size - 2)
@@ -39,7 +41,22 @@ class SphericalCoverage(private val referenceYawDeg: Float) {
 
     fun addsCoverage(pose: Quaternion, horizontalFov: Float, verticalFov: Float): Boolean {
         val frame = frame(pose, horizontalFov, verticalFov)
-        return rays.indices.any { !covered[it] && contains(frame, rays[it]) }
+        var footprint = 0
+        var added = 0
+        for (i in rays.indices) {
+            if (contains(frame, rays[i])) {
+                footprint++
+                if (!covered[i]) added++
+            }
+        }
+        if (added == 0) return false
+        // A new viewing direction may fill even a tiny final gap. Near-identical
+        // directions must add substantial area, so edge jitter cannot retrigger.
+        val nearlyDuplicate = frames.any {
+            val angle = Math.toDegrees(acos(it.forward.dot(frame.forward).coerceIn(-1f, 1f).toDouble()))
+            angle < minOf(it.minimumSpacingDeg, frame.minimumSpacingDeg)
+        }
+        return !nearlyDuplicate || added >= footprint * 0.15f
     }
 
     fun contains(yaw: Float, pitch: Float): Boolean {
@@ -56,6 +73,8 @@ class SphericalCoverage(private val referenceYawDeg: Float) {
         pose.inverse(),
         tan(Math.toRadians(h.coerceIn(20f, 150f).toDouble()) / 2).toFloat() * 0.96f,
         tan(Math.toRadians(v.coerceIn(20f, 150f).toDouble()) / 2).toFloat() * 0.96f,
+        pose.normalized().rotate(Vec3.FORWARD),
+        (minOf(h, v) * 0.2f).coerceIn(6f, 18f),
     )
 
     private fun contains(frame: Frame, ray: Vec3): Boolean {

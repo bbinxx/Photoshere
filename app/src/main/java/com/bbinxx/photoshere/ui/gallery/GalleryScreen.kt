@@ -73,6 +73,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bbinxx.photoshere.PhotoSphereApplication
 import com.bbinxx.photoshere.core.model.PhotoSphereRecord
+import com.bbinxx.photoshere.ui.components.DeleteSphereDialog
 import com.bbinxx.photoshere.ui.components.GradientBackground
 import com.bbinxx.photoshere.ui.theme.Aurora
 import com.bbinxx.photoshere.ui.theme.Coral
@@ -221,22 +222,9 @@ fun GalleryScreen(
     }
 
     pendingDelete?.let { record ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("Delete sphere?") },
-            text = { Text("“${record.title}” will be permanently removed from this device.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.delete(record)
-                        pendingDelete = null
-                    },
-                ) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
-            },
-        )
+        DeleteSphereDialog(title = record.title,
+            onConfirm = { viewModel.delete(record); pendingDelete = null },
+            onDismiss = { pendingDelete = null })
     }
 
     pendingRename?.let { record ->
@@ -361,6 +349,13 @@ private fun GalleryCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        IconButton(
+            onClick = onDelete,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp)
+                .background(Color.Black.copy(alpha = 0.45f), CircleShape),
+        ) {
+            Icon(Icons.Rounded.Delete, contentDescription = "Delete ${record.title}", tint = Coral)
         }
         Box(Modifier.align(Alignment.TopEnd)) {
             IconButton(
