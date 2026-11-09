@@ -72,6 +72,9 @@ local `dev` is identical to `origin/dev`.
   targets using the active lens's FOV, not arbitrary pixel movements.
 - Progress must come from accepted images' coverage, including both poles. Do
   not substitute a photo count or a timer for full 360° × 180° coverage.
+- Allow one automatic attempt per stationary visit, including failed validation.
+  Require actual movement before automatic rearming; cooldown expiry or jitter
+  alone must not cause repeated photos. Keep explicit manual retries available.
 - Reject unsuitable blur/exposure and request a retake. Preserve accepted and
   rejected source photos; no automatic source deletion after stitching.
 

@@ -101,6 +101,7 @@ class CaptureViewModel(
     private var orientationJob: Job? = null
     private var cameraJob: Job? = null
 
+    private val attemptGate = CaptureAttemptGate()
     private val alignmentDetector = AlignmentDetector()
     private var coverageModel = SphericalCoverage(0f)
 
@@ -138,6 +139,8 @@ class CaptureViewModel(
                 sessionCreated = true
                 currentTargetIndex = targets.indexOfFirst { it.status != TargetStatus.CAPTURED }
                     .takeIf { it >= 0 } ?: targets.lastIndex
+                attemptGate.movementThresholdDeg = (minOf(loaded.horizontalFovDeg, loaded.verticalFovDeg) * 0.2f).coerceIn(8f, 18f)
+                loaded.images.lastOrNull()?.let { attemptGate.recordAttempt(Quaternion.fromFloatArray(it.quaternion.toFloatArray())) }
                 coverageModel = SphericalCoverage(loaded.referenceYawDeg)
                 loaded.images.filter { java.io.File(it.filePath).exists() }.forEach { image ->
                     coverageModel.record(image.copy(
@@ -393,6 +396,7 @@ class CaptureViewModel(
         targets = planned
         currentTargetIndex = 0
         sessionCreated = true
+        attemptGate.movementThresholdDeg = (minOf(hFov, vFov) * 0.2f).coerceIn(8f, 18f)
         coverageModel = SphericalCoverage(created.referenceYawDeg)
         publishTargets()
         setState(CaptureState.READY)
@@ -408,6 +412,7 @@ class CaptureViewModel(
             return
         }
         if (!captureInProgress && mutableState.value.state in CAPTURE_ALLOWED_STATES) {
+            attemptGate.observe(snapshot.quaternion)
             selectNearestTarget(snapshot)
         }
         val target = targets.getOrNull(currentTargetIndex)
@@ -417,7 +422,7 @@ class CaptureViewModel(
             AlignmentResult()
         }
         val now = System.currentTimeMillis()
-        if (alignment.aligned && alignment.stable) {
+        if (!attemptGate.waitingForMovement && alignment.aligned && alignment.stable) {
             if (alignedSinceMs == 0L) alignedSinceMs = now
         } else {
             alignedSinceMs = 0L
@@ -469,7 +474,7 @@ class CaptureViewModel(
             !cameraController.state.value.ready || cameraController.state.value.busy ||
             mutableState.value.state !in CAPTURE_ALLOWED_STATES
         ) return
-        if (!manual && session?.images?.none { it.accepted } != false) return
+        if (!manual && (attemptGate.waitingForMovement || session?.images?.none { it.accepted } != false)) return
         val now = System.currentTimeMillis()
         if (now - lastCaptureAtMs < CAPTURE_COOLDOWN_MS) return
         val snapshot = orientationTracker.state.value
@@ -499,6 +504,8 @@ class CaptureViewModel(
             if (!alignment.aligned || !snapshot.stable) return
             suggestion
         }
+        attemptGate.recordAttempt(snapshot.quaternion)
+        alignedSinceMs = 0L
         lastCaptureAtMs = now
         captureInternal(target, snapshot, manual)
     }
@@ -519,7 +526,10 @@ class CaptureViewModel(
                 )
                 viewModelScope.launch { mutableEvents.emit(CaptureEvent.Shutter) }
                 var shutterPose = snapshot
-                cameraController.onCaptureStarted = { shutterPose = orientationTracker.state.value }
+                cameraController.onCaptureStarted = {
+                    shutterPose = orientationTracker.state.value
+                    attemptGate.recordAttempt(shutterPose.quaternion)
+                }
                 val file = cameraController.capture(sessionStore.newImageFile(active.id, target.id))
                 mutableState.value = mutableState.value.copy(
                     state = CaptureState.VALIDATING_IMAGE,
@@ -694,6 +704,10 @@ class CaptureViewModel(
         if (session?.images?.none { it.accepted } != false) return "Point anywhere and tap the shutter to start"
         if (target == null) return "Capture complete"
         if (!snapshot.sensorAvailable) return "Motion sensor unavailable"
+        if (attemptGate.waitingForMovement && !captureInProgress) {
+            return if (session?.images?.lastOrNull()?.accepted == true) "Area captured — move to a new dot"
+                else "Adjust and realign to retry, or tap the shutter"
+        }
         return when {
             mutableState.value.state == CaptureState.VALIDATING_IMAGE -> "Checking image…"
             mutableState.value.state == CaptureState.CAPTURING -> "Capturing…"

@@ -43,4 +43,28 @@ class GalleryRepositoryTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun deletionSurvivesRefreshAndKeepsSourcesAndExportedCopies() = runBlocking<Unit> {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        val root = File(app.cacheDir, "delete_test_${UUID.randomUUID()}").apply { mkdirs() }
+        val context = object : ContextWrapper(app) { override fun getFilesDir(): File = root }
+        try {
+            val source = File(root, "original.jpg")
+            val bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
+            source.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            bitmap.recycle()
+            val exported = source.copyTo(File(root, "exported.jpg"))
+            val repository = GalleryRepository(context)
+            val deleted = repository.addStitchedSphere(source, "deleted_session")
+            val kept = repository.addStitchedSphere(source, "kept_session")
+            repository.delete(deleted)
+            assertFalse(File(deleted.filePath).exists())
+            assertTrue(source.exists())
+            assertTrue(exported.exists())
+            val reopened = GalleryRepository(context)
+            reopened.refresh()
+            assertEquals(kept.id, reopened.records.value.single().id)
+        } finally { root.deleteRecursively() }
+    }
 }

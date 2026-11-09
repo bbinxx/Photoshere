@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Public
@@ -62,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bbinxx.photoshere.PhotoSphereApplication
 import com.bbinxx.photoshere.core.model.PhotoSphereRecord
 import com.bbinxx.photoshere.core.model.SphereMetadata
+import com.bbinxx.photoshere.ui.components.DeleteSphereDialog
 import com.bbinxx.photoshere.ui.theme.Aurora
 import com.bbinxx.photoshere.ui.theme.Mist
 import com.bbinxx.photoshere.ui.theme.Muted
@@ -82,6 +84,10 @@ fun ViewerScreen(recordId: String, onBack: () -> Unit) {
     val gallery = app.container.gallery
     val records by gallery.records.collectAsStateWithLifecycle()
     var refreshed by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var pendingDelete by remember { mutableStateOf<PhotoSphereRecord?>(null) }
+    var deleting by remember { mutableStateOf(false) }
+    var deleteError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(recordId) {
         runCatching { gallery.refresh() }
@@ -116,11 +122,29 @@ fun ViewerScreen(recordId: String, onBack: () -> Unit) {
         return
     }
 
-    ViewerContent(record = record, onBack = onBack)
+    ViewerContent(record = record, onBack = onBack, onDelete = { pendingDelete = record })
+    pendingDelete?.let { selected ->
+        DeleteSphereDialog(title = selected.title, deleting = deleting, error = deleteError,
+            onDismiss = { pendingDelete = null; deleteError = null },
+            onConfirm = {
+                deleting = true
+                deleteError = null
+                scope.launch {
+                    try {
+                        gallery.delete(selected)
+                        onBack()
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        deleteError = error.message ?: "Unable to delete this sphere. Try again."
+                    } finally { deleting = false }
+                }
+            })
+    }
 }
 
 @Composable
-private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
+private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit, onDelete: () -> Unit) {
     val context = LocalContext.current
     val locale = LocalConfiguration.current.locales[0]
     val app = context.applicationContext as PhotoSphereApplication
@@ -207,6 +231,9 @@ private fun ViewerContent(record: PhotoSphereRecord, onBack: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                     color = Mist.copy(alpha = 0.8f),
                 )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Rounded.Delete, contentDescription = "Delete sphere", tint = Color.White)
             }
             IconButton(onClick = { showInfo = true }) {
                 Icon(Icons.Rounded.Info, contentDescription = "Details", tint = Color.White)

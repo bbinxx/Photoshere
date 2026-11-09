@@ -103,8 +103,8 @@ class GalleryRepository(private val context: Context) {
             val file = File(record.filePath)
             check(!file.exists() || file.delete()) { "Unable to delete image from storage" }
             val updated = mutableRecords.value.filterNot { it.id == record.id }
-            mutableRecords.value = updated
             writeIndex(updated)
+            mutableRecords.value = updated
         }
     }
 

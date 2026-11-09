@@ -78,6 +78,24 @@ you do not have to follow a fixed numbered sequence.
 Automatic metering cannot recover missing light or remove motion blur in every
 scene. For cleaner results, use a well-lit, mostly static scene and hold still.
 
+### Delete a saved sphere
+
+Tap the trash icon on a gallery card, or open the sphere and tap **Delete sphere**
+in the viewer toolbar. Confirm **Delete**, or choose **Cancel** to keep it. This
+removes the app's gallery JPEG and index entry; it does not remove original
+capture photographs or copies previously exported to Photos or another folder.
+The viewer returns after deletion. A refreshed gallery does not rediscover the
+deleted JPEG. Deletion errors are shown rather than reported as success.
+
+### Automatic capture retries
+
+After any capture attempt, including a rejected or failed image, automatic
+capture waits for real movement away from the attempted viewing direction.
+Staying aligned, sensor jitter, target changes and cooldown expiry cannot trigger
+an endless retake loop. After a failure, adjust and realign or explicitly tap the
+shutter to retry. Accepted near-identical directions must add substantial new
+coverage, while genuine small gaps remain capturable.
+
 ## Implemented features
 
 | Area | Current implementation |
@@ -173,8 +191,8 @@ Device tests, leaving the APKs installed afterward:
 
 ### Latest verified result
 
-On 2026-11-10, debug assembly and lint passed, along with **34 JVM tests and
-8 device tests**, with no failures. The connected M2101K6P did not expose an
+On 2026-11-10, debug assembly and lint passed, along with **40 JVM tests and
+10 device tests**, with no failures. The connected M2101K6P did not expose an
 ultra-wide option to this application, so actual 0.5× capture remains unverified
 on hardware that exposes that lens. Main-camera capture and preview/JPEG ratio
 matching passed. Real-world full-sphere seam quality remains a manual check.
@@ -185,6 +203,8 @@ Unit regressions cover:
 
 - Quaternion rotation-vector decoding, scalar sign, roll, and orientation maths.
 - Alignment thresholds and screen-axis direction after rolling the phone.
+- Movement rearming after capture attempts, stationary/jitter suppression,
+  near-duplicate filtering and final coverage gap completion.
 - Field-of-view-based capture planning and nearest uncaptured targets.
 - Free-order coverage, duplicate areas, rejected photos, sky/ground, and poles.
 - Sensor cropping, portrait/landscape FOV, ultra-wide geometry, aiming projection.
@@ -202,6 +222,8 @@ Device regressions cover:
 - Synthetic full-sphere projection including both poles and independent XMP
   parsing with AndroidX ExifInterface.
 - URI export, concurrent gallery saves, and preservation after failed replacement.
+- Viewer delete/cancel confirmation, return after deletion, durable gallery removal,
+  and preservation of original photos/exported copies.
 - GPU sphere rendering before and after recreating the EGL context.
 - Rejection of dark, clipped, and textureless synthetic photographs and acceptance
   of a sharp, normally exposed test pattern.
@@ -232,6 +254,10 @@ parallax, moving subjects, and portrait/landscape changes during capture.
 | 8. Optimization and testing | In progress; real-world quality, calibration, thermal/memory profiling remain |
 
 ### Recent changes
+
+- Added visible gallery/viewer deletion with a shared confirmation and preserved originals.
+- Prevented repeated automatic attempts while holding at the same dot, including
+  validation failures and tiny drift at image edges.
 
 - Corrected Android rotation-vector decoding and camera/display coordinate use.
 - Added any-direction manual capture and coverage-based completion.
