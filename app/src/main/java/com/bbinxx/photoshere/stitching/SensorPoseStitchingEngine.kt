@@ -33,9 +33,8 @@ import kotlin.math.tan
  * remain unfilled and are reported to the user.
  *
  * Limitations, stated explicitly:
- *  - Camera pose comes from the rotation vector. Gyro drift or magnetic
- *    disturbance can shift images; feature-based bundle adjustment is the next
- *    quality step and is not silently claimed here.
+ *  - Sensor poses receive conservative local ORB/RANSAC rotation refinement.
+ *    Global bundle adjustment is not implemented; drift/parallax may remain.
  *  - Lens distortion is not corrected unless a calibration profile is supplied.
  *  - Moving objects may ghost because no temporal de-ghosting is applied.
  */
@@ -68,6 +67,11 @@ class SensorPoseStitchingEngine(
         var accum: FloatArray? = null
         var weights: FloatArray? = null
         try {
+            onProgress(ProcessingProgress(0f, "Matching overlapping images"))
+            val alignment = VisualPoseRefiner().refine(images) {
+                onProgress(ProcessingProgress(it * 0.25f, "Refining image alignment"))
+            }
+            warnings += alignment.warnings
             val rgbAccum = FloatArray(pixelCount * 3)
             val weightAccum = FloatArray(pixelCount)
             accum = rgbAccum
@@ -77,7 +81,7 @@ class SensorPoseStitchingEngine(
             val horizontalFov = session.horizontalFovDeg.coerceIn(25f, 120f)
             var used = 0
 
-            images.forEachIndexed { index, meta ->
+            alignment.images.forEachIndexed { index, meta ->
                 coroutineContext.ensureActive()
                 val bitmap = preprocessor.load(File(meta.filePath), maxSourceSide)
                 if (bitmap == null) {
@@ -103,7 +107,7 @@ class SensorPoseStitchingEngine(
                 }
                 onProgress(
                     ProcessingProgress(
-                        fraction = (index + 1).toFloat() / images.size * 0.85f,
+                        fraction = 0.25f + (index + 1).toFloat() / images.size * 0.60f,
                         stage = "Projecting ${index + 1} of ${images.size}",
                     ),
                 )
