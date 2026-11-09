@@ -34,14 +34,14 @@ class ImageQualityValidator(
         }
         BitmapFactory.decodeFile(file.absolutePath, options)
         if (options.outWidth <= 0 || options.outHeight <= 0) {
-            return QualityReport(0f, 0f, false, "Image could not be read")
+            return QualityReport(0f, 0f, false, "Image could not be read", readable = false)
         }
         val sample = maxOf(options.outWidth, options.outHeight) / 1024
         val decodeOptions = BitmapFactory.Options().apply {
             inSampleSize = sample.coerceAtLeast(1)
         }
         val bitmap = BitmapFactory.decodeFile(file.absolutePath, decodeOptions)
-            ?: return QualityReport(0f, 0f, false, "Image could not be decoded")
+            ?: return QualityReport(0f, 0f, false, "Image could not be decoded", readable = false)
 
         return try {
             if (nativeAvailable) runCatching { validateWithOpenCv(bitmap) }

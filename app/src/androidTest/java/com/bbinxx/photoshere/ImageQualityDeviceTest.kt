@@ -18,7 +18,29 @@ class ImageQualityDeviceTest {
         fun save() { file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) } }
         try {
             bitmap.eraseColor(Color.BLACK); save()
-            assertFalse(validator.validate(file).acceptable)
+            val dark = validator.validate(file)
+            assertFalse(dark.acceptable)
+            assertTrue(dark.readable)
+            assertTrue(com.bbinxx.photoshere.capture.CaptureAcceptance.accepts(true, dark, false))
+            val root = File(context.cacheDir, "manual_session_${UUID.randomUUID()}").apply { mkdirs() }
+            try {
+                val isolated = object : android.content.ContextWrapper(context) {
+                    override fun getFilesDir(): File = root
+                }
+                val store = com.bbinxx.photoshere.data.repository.SessionStore(isolated)
+                val quaternion = com.bbinxx.photoshere.core.model.Quaternion.IDENTITY
+                val session = store.create(quaternion, 0f, 65f, 50f, emptyList())
+                val original = file.copyTo(File(root, "original.jpg"))
+                val image = com.bbinxx.photoshere.core.model.CapturedImageMeta(0, original.path,
+                    quaternion.toFloatArray().toList(), 0f, 0f, 0L, accepted = true,
+                    note = "Accepted by manual shutter: Too dark", horizontalFovDeg = 65f,
+                    verticalFovDeg = 50f, manualOverride = true)
+                store.save(session.copy(images = listOf(image)))
+                val reopened = store.load(session.id)!!
+                assertTrue(reopened.images.single().accepted)
+                assertTrue(reopened.images.single().manualOverride)
+                assertEquals(1, store.existingImages(reopened).size)
+            } finally { root.deleteRecursively() }
             bitmap.eraseColor(Color.WHITE); save()
             assertFalse(validator.validate(file).acceptable)
             bitmap.eraseColor(Color.GRAY); save()
@@ -29,6 +51,10 @@ class ImageQualityDeviceTest {
             }
             save()
             assertTrue(validator.validate(file).acceptable)
+            file.writeText("not a JPEG")
+            val unreadable = validator.validate(file)
+            assertFalse(unreadable.readable)
+            assertFalse(com.bbinxx.photoshere.capture.CaptureAcceptance.accepts(true, unreadable, true))
         } finally {
             bitmap.recycle()
             file.delete()
