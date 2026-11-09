@@ -75,8 +75,6 @@ class SensorPoseStitchingEngine(
 
             val referenceYawRad = Math.toRadians(session.referenceYawDeg.toDouble())
             val horizontalFov = session.horizontalFovDeg.coerceIn(25f, 120f)
-            var runningLuma = 0.0
-            var gainSamples = 0
             var used = 0
 
             images.forEachIndexed { index, meta ->
@@ -98,16 +96,6 @@ class SensorPoseStitchingEngine(
                         referenceYawRad = referenceYawRad,
                         rgbAccum = rgbAccum,
                         weightAccum = weightAccum,
-                        preprocessor = preprocessor,
-                        gainProvider = { luma ->
-                            val gain = if (gainSamples == 0) 1.0 else {
-                                val target = runningLuma / gainSamples
-                                (target / luma.coerceAtLeast(1.0)).coerceIn(0.75, 1.35)
-                            }
-                            runningLuma += luma
-                            gainSamples++
-                            gain.toFloat()
-                        },
                     )
                     used++
                 } finally {
@@ -194,8 +182,6 @@ class SensorPoseStitchingEngine(
         referenceYawRad: Double,
         rgbAccum: FloatArray,
         weightAccum: FloatArray,
-        preprocessor: ImagePreprocessor,
-        gainProvider: (Double) -> Float,
     ) {
         val width = bitmap.width
         val height = bitmap.height
@@ -211,7 +197,6 @@ class SensorPoseStitchingEngine(
         val fy = meta.verticalFovDeg.takeIf { it in 20f..150f }?.let {
             (height * 0.5 / tan(Math.toRadians(it.toDouble()) * 0.5)).toFloat()
         } ?: fx
-        val gain = gainProvider(preprocessor.centralMeanLuma(pixels, width, height))
         val feather = (0.07f * minOf(width, height)).coerceAtLeast(4f)
         val sinLon = FloatArray(outputWidth)
         val cosLon = FloatArray(outputWidth)
@@ -220,6 +205,33 @@ class SensorPoseStitchingEngine(
             sinLon[x] = sin(longitude).toFloat()
             cosLon[x] = cos(longitude).toFloat()
         }
+        val exposureSamples = mutableListOf<Pair<Float, Float>>()
+        for (y in 0 until outputHeight step 16) {
+            coroutineContext.ensureActive()
+            val lat = PI / 2 - (y + 0.5) / outputHeight * PI
+            val cp = cos(lat).toFloat()
+            val wz = sin(lat).toFloat()
+            for (x in 0 until outputWidth step 16) {
+                val index = y * outputWidth + x
+                val previousWeight = weightAccum[index]
+                if (previousWeight < 0.1f) continue
+                val wx = cp * sinLon[x]
+                val wy = cp * cosLon[x]
+                val z = axisX.z * wx + axisY.z * wy + axisZ.z * wz
+                if (z >= -0.02f) continue
+                val sx = width * 0.5f + fx * (axisX.x * wx + axisY.x * wy + axisZ.x * wz) / -z
+                val sy = height * 0.5f - fy * (axisX.y * wx + axisY.y * wy + axisZ.y * wz) / -z
+                if (sx < feather || sy < feather || sx >= width - feather || sy >= height - feather) continue
+                val color = pixels[sy.toInt() * width + sx.toInt()]
+                val source = (0.299f * ((color shr 16) and 255) + 0.587f * ((color shr 8) and 255) +
+                    0.114f * (color and 255)) / 255f
+                val offset = index * 3
+                val previous = (0.299f * rgbAccum[offset] + 0.587f * rgbAccum[offset + 1] +
+                    0.114f * rgbAccum[offset + 2]) / previousWeight
+                exposureSamples += previous to source
+            }
+        }
+        val gain = OverlapExposure.gain(exposureSamples)
         // Inverse mapping samples every destination ray. Forward splatting
         // leaves resolution-dependent holes, especially around the poles.
         for (y in 0 until outputHeight) {

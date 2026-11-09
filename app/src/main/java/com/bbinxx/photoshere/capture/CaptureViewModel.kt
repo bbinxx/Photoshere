@@ -233,6 +233,7 @@ class CaptureViewModel(
     fun setFlash(setting: FlashSetting) = cameraController.setFlash(setting)
 
     fun selectLens(cameraId: String) {
+        if (captureInProgress || cameraController.state.value.busy) return
         if (session?.images?.any { it.accepted } == true) {
             mutableState.value = mutableState.value.copy(
                 notice = "Camera cannot be changed after the first capture",

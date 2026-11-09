@@ -1,3 +1,5 @@
+> Archived original product requirements. For implemented features, verification, and current limitations, see [README.md](../README.md).
+
 # Project: PhotoSphere
 ## Native Android Open-Source 360° Photo Sphere Camera
 

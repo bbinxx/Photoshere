@@ -3,6 +3,7 @@ package com.bbinxx.photoshere.stitching
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.bbinxx.photoshere.core.model.QualityReport
+import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
@@ -25,6 +26,8 @@ class ImageQualityValidator(
     private val maxMeanLuma: Double = 245.0,
 ) {
 
+    private val nativeAvailable by lazy { runCatching { OpenCVLoader.initLocal() }.getOrDefault(false) }
+
     fun validate(file: File): QualityReport {
         val options = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
@@ -41,8 +44,9 @@ class ImageQualityValidator(
             ?: return QualityReport(0f, 0f, false, "Image could not be decoded")
 
         return try {
-            runCatching { validateWithOpenCv(bitmap) }
+            if (nativeAvailable) runCatching { validateWithOpenCv(bitmap) }
                 .getOrElse { validateWithBitmap(bitmap) }
+            else validateWithBitmap(bitmap)
         } finally {
             bitmap.recycle()
         }
@@ -72,8 +76,9 @@ class ImageQualityValidator(
     }
 
     private fun validateWithBitmap(bitmap: Bitmap): QualityReport {
-        val width = bitmap.width.coerceAtMost(512)
-        val height = bitmap.height.coerceAtMost(512)
+        val scale = minOf(1f, 512f / maxOf(bitmap.width, bitmap.height))
+        val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
+        val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
         val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
         val pixels = IntArray(width * height)
         scaled.getPixels(pixels, 0, width, 0, 0, width, height)
