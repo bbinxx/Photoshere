@@ -10,12 +10,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 
 class GalleryRepository(private val context: Context) {
+
+    private val mutex = Mutex()
 
     private val root: File
         get() = File(context.filesDir, "spheres").apply { mkdirs() }
@@ -27,98 +32,105 @@ class GalleryRepository(private val context: Context) {
     val records: StateFlow<List<PhotoSphereRecord>> = mutableRecords.asStateFlow()
 
     suspend fun refresh() = withContext(Dispatchers.IO) {
-        val stored = readIndex().filter { File(it.filePath).exists() }
-        val knownPaths = stored.map { it.filePath }.toSet()
-        val discovered = root.listFiles()
-            ?.filter { it.isFile && it.extension.equals("jpg", true) }
-            ?.filterNot { it.absolutePath in knownPaths }
-            ?.mapNotNull { file -> recordForFile(file, sessionId = null, imported = false) }
-            ?: emptyList()
-        val merged = (stored + discovered).sortedByDescending { it.createdAtMs }
-        mutableRecords.value = merged
-        writeIndex(merged)
+        mutex.withLock {
+            val stored = readIndex().filter { File(it.filePath).exists() }
+            val knownPaths = stored.map { it.filePath }.toSet()
+            val discovered = root.listFiles()
+                ?.filter { it.isFile && it.extension.equals("jpg", true) }
+                ?.filterNot { it.absolutePath in knownPaths }
+                ?.mapNotNull { file -> recordForFile(file, sessionId = null, imported = false) }
+                ?: emptyList()
+            val merged = (stored + discovered).sortedByDescending { it.createdAtMs }
+            mutableRecords.value = merged
+            writeIndex(merged)
+        }
     }
 
     suspend fun addStitchedSphere(source: File, sessionId: String?, title: String? = null): PhotoSphereRecord =
         withContext(Dispatchers.IO) {
-            if (sessionId != null) {
-                val previous = mutableRecords.value.filter { it.sessionId == sessionId }
-                if (previous.isNotEmpty()) {
-                    previous.forEach { File(it.filePath).delete() }
-                    val remaining = mutableRecords.value - previous.toSet()
-                    mutableRecords.value = remaining
-                    writeIndex(remaining)
+            mutex.withLock {
+                val previous = mutableRecords.value.filter { sessionId != null && it.sessionId == sessionId }
+                val id = "sphere_${UUID.randomUUID()}"
+                val destination = File(root, "$id.jpg")
+                if (source.absolutePath != destination.absolutePath) {
+                    source.copyTo(destination, overwrite = true)
                 }
+                val record = recordForFile(
+                    file = destination,
+                    sessionId = sessionId,
+                    imported = false,
+                    forcedId = id,
+                    forcedTitle = title ?: defaultTitle(),
+                ) ?: error("Unable to read stitched image")
+                val updated = (mutableRecords.value - previous.toSet() + record).sortedByDescending { it.createdAtMs }
+                writeIndex(updated)
+                mutableRecords.value = updated
+                previous.forEach { File(it.filePath).delete() }
+                record
             }
-            val id = "sphere_${System.currentTimeMillis()}"
-            val destination = File(root, "$id.jpg")
-            if (source.absolutePath != destination.absolutePath) {
-                source.copyTo(destination, overwrite = true)
-            }
-            val record = recordForFile(
-                file = destination,
-                sessionId = sessionId,
-                imported = false,
-                forcedId = id,
-                forcedTitle = title ?: defaultTitle(),
-            ) ?: error("Unable to read stitched image")
-            val updated = (mutableRecords.value + record).sortedByDescending { it.createdAtMs }
-            mutableRecords.value = updated
-            writeIndex(updated)
-            record
         }
 
     suspend fun importFromUri(uri: Uri): PhotoSphereRecord? = withContext(Dispatchers.IO) {
-        return@withContext runCatching {
-            val id = "sphere_${System.currentTimeMillis()}"
-            val destination = File(root, "$id.jpg")
-            val input: InputStream = context.contentResolver.openInputStream(uri)
-                ?: return@runCatching null
-            input.use { source -> destination.outputStream().use { target -> source.copyTo(target) } }
-            val record = recordForFile(
-                file = destination,
-                sessionId = null,
-                imported = true,
-                forcedId = id,
-                forcedTitle = "Imported ${defaultTitle()}",
-            ) ?: return@runCatching null
-            val aspect = record.width.toFloat() / record.height.toFloat()
-            if (aspect < 1.7f || aspect > 2.3f) {
-                destination.delete()
-                return@runCatching null
-            }
-            val updated = (mutableRecords.value + record).sortedByDescending { it.createdAtMs }
-            mutableRecords.value = updated
-            writeIndex(updated)
-            record
-        }.getOrNull()
+        mutex.withLock {
+            return@withContext runCatching {
+                val id = "sphere_${UUID.randomUUID()}"
+                val destination = File(root, "$id.jpg")
+                val input: InputStream = context.contentResolver.openInputStream(uri)
+                    ?: return@runCatching null
+                input.use { source -> destination.outputStream().use { target -> source.copyTo(target) } }
+                val record = recordForFile(
+                    file = destination,
+                    sessionId = null,
+                    imported = true,
+                    forcedId = id,
+                    forcedTitle = "Imported ${defaultTitle()}",
+                ) ?: return@runCatching null
+                val aspect = record.width.toFloat() / record.height.toFloat()
+                if (aspect < 1.7f || aspect > 2.3f) {
+                    destination.delete()
+                    return@runCatching null
+                }
+                val updated = (mutableRecords.value + record).sortedByDescending { it.createdAtMs }
+                mutableRecords.value = updated
+                writeIndex(updated)
+                record
+            }.getOrNull()
+        }
     }
 
     suspend fun delete(record: PhotoSphereRecord) = withContext(Dispatchers.IO) {
-        File(record.filePath).delete()
-        val updated = mutableRecords.value.filterNot { it.id == record.id }
-        mutableRecords.value = updated
-        writeIndex(updated)
+        mutex.withLock {
+            val file = File(record.filePath)
+            check(!file.exists() || file.delete()) { "Unable to delete image from storage" }
+            val updated = mutableRecords.value.filterNot { it.id == record.id }
+            mutableRecords.value = updated
+            writeIndex(updated)
+        }
     }
 
     suspend fun rename(record: PhotoSphereRecord, title: String) = withContext(Dispatchers.IO) {
-        val updated = mutableRecords.value.map {
-            if (it.id == record.id) it.copy(title = title.trim().ifBlank { it.title }) else it
+        mutex.withLock {
+            val updated = mutableRecords.value.map {
+                if (it.id == record.id) it.copy(title = title.trim().ifBlank { it.title }) else it
+            }
+            writeIndex(updated)
+            mutableRecords.value = updated
         }
-        mutableRecords.value = updated
-        writeIndex(updated)
     }
 
     suspend fun exportToUri(record: PhotoSphereRecord, uri: Uri) = withContext(Dispatchers.IO) {
-        val input = File(record.filePath).inputStream()
-        val output = context.contentResolver.openOutputStream(uri)
-            ?: error("Unable to open export destination")
-        input.use { source -> output.use { target -> source.copyTo(target) } }
-        val updated = mutableRecords.value.map {
-            if (it.id == record.id) it.copy(exportedUri = uri.toString()) else it
+        mutex.withLock {
+            File(record.filePath).inputStream().use { source ->
+                val output = context.contentResolver.openOutputStream(uri)
+                    ?: error("Unable to open export destination")
+                output.use { target -> source.copyTo(target) }
+            }
+            val updated = mutableRecords.value.map {
+                if (it.id == record.id) it.copy(exportedUri = uri.toString()) else it
+            }
+            writeIndex(updated)
+            mutableRecords.value = updated
         }
-        mutableRecords.value = updated
-        writeIndex(updated)
     }
 
     fun shareUri(record: PhotoSphereRecord): Uri = FileProvider.getUriForFile(

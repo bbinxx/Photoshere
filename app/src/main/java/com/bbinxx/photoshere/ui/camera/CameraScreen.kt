@@ -1,5 +1,8 @@
 package com.bbinxx.photoshere.ui.camera
 
+import androidx.activity.compose.BackHandler
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import android.media.MediaActionSound
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.animateFloatAsState
@@ -68,6 +71,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -117,8 +122,25 @@ fun CameraScreen(
         val previewView = remember {
             PreviewView(context).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
-                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                implementationMode = PreviewView.ImplementationMode.PERFORMANCE
             }
+        }
+
+        BackHandler {
+            viewModel.cancelCapture()
+            onClose()
+        }
+
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> viewModel.resumeSensors()
+                    Lifecycle.Event.ON_PAUSE -> viewModel.pauseSensors()
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
         }
 
         DisposableEffect(Unit) {
@@ -199,12 +221,6 @@ fun CameraScreen(
                     viewModel.setFlash(next)
                 },
                 onLensSelected = viewModel::selectLens,
-                onZoom = { delta ->
-                    viewModel.setZoom((ui.camera.zoomRatio + delta).coerceIn(
-                        ui.camera.minZoom,
-                        ui.camera.maxZoom,
-                    ))
-                },
             )
 
             Column(
@@ -281,7 +297,7 @@ private fun CaptureOverlay(ui: CaptureUiState) {
             drawArc(
                 color = Aurora.copy(alpha = 0.9f),
                 startAngle = -90f,
-                sweepAngle = 360f * (captured.toFloat() / total),
+                sweepAngle = 360f * ui.coverage,
                 useCenter = false,
                 topLeft = Offset(center.x - progressRingRadius, center.y - progressRingRadius),
                 size = Size(progressRingRadius * 2, progressRingRadius * 2),
@@ -312,6 +328,18 @@ private fun CaptureOverlay(ui: CaptureUiState) {
                     center = position,
                     style = Stroke(width = with(density) { 1.5.dp.toPx() }),
                 )
+            }
+        }
+
+        // Nearby pending areas appear where they lie in the real viewfinder,
+        // rather than forcing the photographer through a numbered sequence.
+        val detector = com.bbinxx.photoshere.capture.AlignmentDetector()
+        ui.targets.filter { it.status != TargetStatus.CAPTURED && it.id != ui.currentTarget?.id }.forEach { target ->
+            val error = detector.evaluate(ui.orientation, target)
+            if (kotlin.math.abs(error.yawErrorDeg) < 45f && kotlin.math.abs(error.pitchErrorDeg) < 40f) {
+                val scale = minSide * 0.0036f
+                drawCircle(Color.White.copy(alpha = 0.45f), 4.dp.toPx(),
+                    Offset(center.x + error.yawErrorDeg * scale, center.y - error.pitchErrorDeg * scale))
             }
         }
 
@@ -360,8 +388,7 @@ private fun CaptureOverlay(ui: CaptureUiState) {
             val scale = minSide * 0.0036f
             val yaw = ui.alignment.yawErrorDeg.coerceIn(-70f, 70f)
             val pitch = ui.alignment.pitchErrorDeg.coerceIn(-70f, 70f)
-            val pitchRadians = Math.toRadians(ui.orientation.pitchDeg.toDouble())
-            val rawDx = (yaw * cos(pitchRadians).toFloat()) * scale
+            val rawDx = yaw * scale
             val rawDy = -pitch * scale
             val length = kotlin.math.sqrt(rawDx * rawDx + rawDy * rawDy)
             val maxLength = ringRadius * 0.92f
@@ -435,8 +462,7 @@ private fun CaptureOverlay(ui: CaptureUiState) {
         if (ui.totalCount > 0) {
             Spacer(Modifier.height(14.dp))
             Text(
-                text = "${ui.capturedCount} / ${ui.totalCount} positions  ·  " +
-                    "${(100f * ui.capturedCount / ui.totalCount).toInt()}%",
+                text = "${ui.capturedCount} photos  ·  ${(100f * ui.coverage).toInt()}% of sphere",
                 color = Color.White.copy(alpha = 0.82f),
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -451,7 +477,6 @@ private fun CameraTopBar(
     onSettings: () -> Unit,
     onFlash: () -> Unit,
     onLensSelected: (String) -> Unit,
-    onZoom: (Float) -> Unit,
 ) {
     var lensMenuOpen by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize()) {
@@ -539,18 +564,8 @@ private fun CameraTopBar(
                 .padding(end = 10.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.4f)) {
-                IconButton(onClick = { onZoom(0.5f) }) {
-                    Icon(Icons.Rounded.ZoomIn, contentDescription = "Zoom in", tint = Color.White)
-                }
-            }
-            Surface(shape = CircleShape, color = Color.Black.copy(alpha = 0.4f)) {
-                IconButton(onClick = { onZoom(-0.5f) }) {
-                    Icon(Icons.Rounded.ZoomOut, contentDescription = "Zoom out", tint = Color.White)
-                }
-            }
             Text(
-                text = String.format(java.util.Locale.US, "%.1fx", ui.camera.zoomRatio),
+                text = "1× capture",
                 color = Color.White.copy(alpha = 0.75f),
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -606,6 +621,7 @@ private fun ShutterButton(
     Box(
         modifier = modifier
             .size(78.dp)
+            .semantics { contentDescription = "Take photo" }
             .clip(CircleShape)
             .border(3.dp, Color.White.copy(alpha = if (enabled) 0.95f else 0.3f), CircleShape)
             .clickable(enabled = enabled) { onClick() },
@@ -628,7 +644,8 @@ private fun FinishControls(
     onFinish: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val canFinish = ui.capturedCount >= 3
+    val canFinish = ui.capturedCount >= 3 && ui.coverage >= 1f &&
+        ui.state != CaptureState.CAPTURING && ui.state != CaptureState.VALIDATING_IMAGE
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -646,7 +663,7 @@ private fun FinishControls(
             }
         }
         Text(
-            text = if (canFinish) "Finish" else "${3 - ui.capturedCount} min",
+            text = if (canFinish) "Stitch" else "${(ui.coverage * 100).toInt()}%",
             color = if (canFinish) Aurora else Muted,
             style = MaterialTheme.typography.labelSmall,
         )

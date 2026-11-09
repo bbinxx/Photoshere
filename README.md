@@ -13,13 +13,14 @@ There is no account, no upload and no analytics. Everything runs on the device.
 
 - Guided capture with centre target, moving alignment dot, stability ring,
   auto-capture, manual shutter and spherical progress.
-- CameraX capture with lens selection, flash modes, torch, zoom, exposure/AF
-  locks where the device supports them.
+- CameraX capture with lens selection, flash modes, torch and exposure/AF
+  locks where the device supports them. Sphere capture keeps the selected lens
+  at 1× so the capture grid and projection use consistent intrinsics.
 - Rotation-vector sensor tracking with gyroscope stability detection and an
   accelerometer + magnetometer fallback.
-- Sensor-pose spherical stitching: source pixels are projected with the measured
-  field of view and recorded quaternion, blended with edge feathering, exposure
-  normalised, gap-filled, then saved as an equirectangular JPEG.
+- Sensor-pose spherical stitching: destination rays sample the captured images
+  using measured field of view and recorded quaternions. Overlaps are feathered
+  and exposure normalised; missing areas are reported rather than fabricated.
 - GPano XMP metadata injection for Google Photos, Facebook and other panorama
   viewers.
 - OpenGL ES 3 sphere viewer with drag, pinch zoom, double-tap reset and optional
@@ -77,23 +78,58 @@ World frame: X = east, Y = north, Z = up. Device frame: X = right, Y = up,
 Z = out of the screen; the rear camera looks along device -Z. Quaternions are
 used everywhere for tracking; Euler angles are display-only.
 
-### Capture plan
+### Preview and startup reliability
 
-The planner derives ring count and spacing from the measured horizontal and
-vertical field of view plus the requested overlap. A wide lens needs fewer
-photos; a narrow lens needs more. Zenith and nadir are always included.
-Captures are processed in plan order, which starts at the horizon and moves up,
-over the zenith, down and around, then to the nadir.
+CameraX owns preview rendering and autofocus. Preview uses SDR and the
+SurfaceView performance path, avoiding TextureView colour conversion on devices
+that render it incorrectly. Exposure/white-balance locks are requested only after
+Camera2 reports convergence; autofocus uses CameraX metering instead of forcing
+infinity. Camera initialisation failures are shown as capture errors, and leaving
+the screen does not cancel the shared CameraX provider future. Sensor samples
+reach the UI at 20 Hz while tracking continues at the sensor rate. OpenCV loads
+lazily when requested rather than during every app launch.
+
+When running device tests, leave the app installed:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true
+```
+
+### Free-direction capture
+
+Point anywhere and tap the shutter to take the first photograph. Start with the
+sky, ground or horizon; there is no mandatory starting direction. Subsequent
+manual captures can also face any new area. With automatic capture enabled,
+align any nearby suggested dot and hold steady. The next suggestion follows the
+nearest uncaptured region rather than a fixed horizontal/vertical sequence.
+Rotate around the camera's optical centre and overlap neighbouring photographs
+to reduce parallax.
+
+A field-of-view-dependent target grid supplies suggestions. Progress instead uses
+a separate equal-area spherical coverage model built from accepted photographs'
+actual shutter-time quaternions and horizontal/vertical fields of view. Rejected
+photos add no coverage; repeated coverage is skipped. Sky and ground poles are
+checked explicitly. Remaining sampled gaps generate additional suggestions, and
+stitching becomes available only when the coverage model is complete. Coverage
+is a finite sampling estimate, not a guarantee of pixel-perfect seams.
 
 ### Stitching
 
-`SensorPoseStitchingEngine` builds an equirectangular accumulator. For each
-source pixel it reconstructs a camera ray using that capture's horizontal FOV
-(recorded per image, with the session FOV as a fallback), rotates it with the
-capture quaternion, and splats it into the panorama. Overlaps use a
-cosine/edge weight, each frame receives a bounded exposure gain, uncovered
-pixels are filled from valid neighbours, and the JPEG is written with GPano
-metadata.
+`SensorPoseStitchingEngine` inverse-projects each equirectangular destination
+ray into each camera using the recorded quaternion and horizontal/vertical FOV.
+It bilinearly samples source pixels and blends overlaps with cosine/edge weights
+and a bounded exposure gain. Inverse mapping avoids the sparse pixel gaps of
+forward splatting at large output sizes and at the poles. Unobserved regions
+remain unfilled, and the measured coverage is shown with warnings. JPEG output
+includes GPano metadata.
+
+Android rotation vectors encode quaternion vector components as
+`axis * sin(angle/2)`, with an optional scalar `cos(angle/2)`; the scalar's sign
+must be preserved. Display rotation is a quarter-turn index (`Surface.ROTATION_*`),
+not a degree value. The camera frame maps EXIF-normalised image right/up axes
+back into the device frame, including front-camera facing. The guide projects
+targets through the inverse camera quaternion so its direction follows screen
+rotation. Source photographs are retained after stitching, including retries.
 
 ## Honest limitations
 
@@ -104,8 +140,9 @@ These are known and intentionally not presented as solved:
 - Lens distortion is not corrected without a calibration profile.
 - Moving subjects can ghost; no temporal de-ghosting is applied.
 - The stitcher is CPU-based; time and peak memory grow with output width.
-- Alignment-dot direction conventions and Camera2 interop behaviour have not
-  been verified on physical hardware in this workspace.
+- Full real-world spherical capture, front-camera projection and portrait/landscape
+  changes during a session still need hands-on verification. Resuming assumes
+  that the sensor world heading remains consistent with the saved session.
 - The viewer decodes textures up to 4096 px on the long edge to stay within
   common GL texture limits; very large spheres are downsampled for viewing.
 - OpenCV adds roughly 110 MB of debug AAR/native payload. Release builds should
@@ -121,13 +158,25 @@ These are known and intentionally not presented as solved:
 
 ## Verification status
 
-- `:app:compileDebugKotlin` passes.
-- `:app:assembleDebug` passes.
-- 19 JVM unit tests pass (quaternion maths, alignment, planner/coverage, GPano
-  XMP injection).
-- Camera, sensors, automatic capture, stitching quality and the GL viewer have
-  not been exercised on a physical device in this workspace. Test on your target
-  hardware before making quality claims.
+Build and checks:
+
+```bash
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+./gradlew :app:connectedDebugAndroidTest
+```
+
+The connected test device reports model **M2101K6P**, Android 17; it is not a
+OnePlus 13. Device regressions cover actual rear-camera JPEG capture, live sensor
+orientation, comparison with Android's rotation matrix, synthetic full-sphere
+projection including zenith/nadir, GPano parsing with AndroidX ExifInterface,
+byte-identical URI export, concurrent gallery saves and preservation of the old
+sphere when replacement fails. An OpenGL regression checks texture rendering
+before and after recreating the EGL context.
+
+These checks do not establish real-world seam quality or OnePlus 13 compatibility.
+The stitcher still lacks feature-based pose refinement, lens distortion correction,
+seam optimisation and multiband blending. A complete guided sphere must be
+captured by hand to assess these remaining quality limits.
 
 ## Third-party licenses
 

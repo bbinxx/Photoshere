@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -437,6 +438,7 @@ private fun ResumeRow(
 
 @Composable
 private fun RecentCard(record: PhotoSphereRecord, onClick: () -> Unit) {
+    val locale = LocalConfiguration.current.locales[0]
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = record.filePath) {
         value = withContext(Dispatchers.IO) { decodeThumbnail(record.filePath) }
     }
@@ -481,7 +483,7 @@ private fun RecentCard(record: PhotoSphereRecord, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(
-            text = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
+            text = SimpleDateFormat("d MMM yyyy", locale)
                 .format(Date(record.createdAtMs)),
             style = MaterialTheme.typography.labelSmall,
             color = Muted,

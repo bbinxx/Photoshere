@@ -218,13 +218,10 @@ fun SettingsScreen(
                 }
                 item {
                     SettingsSection("Storage & export") {
-                        SwitchRow(
-                            title = "Keep original photos",
-                            subtitle = "Preserves raw captures so a session can be resumed",
-                            checked = settings.saveOriginals,
-                            onCheckedChange = { value ->
-                                viewModel.update { it.copy(saveOriginals = value) }
-                            },
+                        Text(
+                            "Original photos are retained so you can resume or reprocess a session.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Muted,
                         )
                         SwitchRow(
                             title = "Auto stitch",
