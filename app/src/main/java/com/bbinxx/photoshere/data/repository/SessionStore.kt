@@ -13,8 +13,8 @@ import java.io.File
 
 /**
  * Durable session storage. Source captures are kept in
- * filesDir/sessions/<id>/raw_*.jpg until the stitched result is safely saved, unless
- * the user opts to keep originals.
+ * filesDir/sessions/<id>/raw_*.jpg. Originals are retained after processing;
+ * a user-confirmed capture deletion explicitly removes that session's files.
  * The metadata is a small JSON document so an interrupted session can be reopened.
  */
 class SessionStore(private val context: Context) {
@@ -61,7 +61,7 @@ class SessionStore(private val context: Context) {
     }
 
     fun load(sessionId: String): SessionMetadata? {
-        val file = File(sessionDir(sessionId), "session.json")
+        val file = File(File(root, sessionId), "session.json")
         if (!file.exists()) return null
         return runCatching { JSONObject(file.readText()).toSession() }.getOrNull()
     }
@@ -79,7 +79,8 @@ class SessionStore(private val context: Context) {
 
     fun delete(sessionId: String): Boolean {
         val dir = File(root, sessionId)
-        return dir.exists() && dir.deleteRecursively()
+        require(dir.canonicalFile.parentFile == root.canonicalFile) { "Invalid capture session" }
+        return !dir.exists() || dir.deleteRecursively()
     }
 
     private fun SessionMetadata.toJson(): JSONObject = JSONObject().apply {

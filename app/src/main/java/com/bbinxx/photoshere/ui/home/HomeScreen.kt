@@ -28,11 +28,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -70,6 +74,8 @@ import com.bbinxx.photoshere.ui.theme.InkSurface
 import com.bbinxx.photoshere.ui.theme.Mist
 import com.bbinxx.photoshere.ui.theme.Muted
 import com.bbinxx.photoshere.ui.theme.Sky
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -91,6 +97,10 @@ fun HomeScreen(
     val container = app.container
     val records by container.gallery.records.collectAsStateWithLifecycle()
     var sessions by remember { mutableStateOf<List<SessionMetadata>>(emptyList()) }
+    val scope = rememberCoroutineScope()
+    var pendingDeleteCapture by remember { mutableStateOf<SessionMetadata?>(null) }
+    var deletingCapture by remember { mutableStateOf(false) }
+    var deleteCaptureError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         sessions = withContext(Dispatchers.IO) {
@@ -101,8 +111,7 @@ fun HomeScreen(
 
     val resumable = remember(sessions, records) {
         sessions.filter { session ->
-            val accepted = session.images.count { it.accepted }
-            accepted > 0 && records.none { it.sessionId == session.id }
+            session.images.isNotEmpty() && records.none { it.sessionId == session.id }
         }
     }
     val recent = records.take(8)
@@ -179,6 +188,7 @@ fun HomeScreen(
                     ResumeRow(
                         session = session,
                         onResume = { onResumeSession(session.id) },
+                        onDelete = { pendingDeleteCapture = session; deleteCaptureError = null },
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
@@ -225,6 +235,33 @@ fun HomeScreen(
                 }
             }
         }
+    }
+    pendingDeleteCapture?.let { selected ->
+        AlertDialog(
+            onDismissRequest = { if (!deletingCapture) pendingDeleteCapture = null },
+            title = { Text("Delete capture?") },
+            text = { Text(deleteCaptureError ?: "Delete this capture session and all ${selected.images.size} source photos? This cannot be undone. Saved spheres and exported copies are kept.") },
+            confirmButton = {
+                TextButton(enabled = !deletingCapture, onClick = {
+                    deletingCapture = true
+                    deleteCaptureError = null
+                    scope.launch {
+                        try {
+                            sessions = withContext(Dispatchers.IO) {
+                                check(container.sessionStore.delete(selected.id)) { "Unable to delete capture. Please try again." }
+                                container.sessionStore.listSessions()
+                            }
+                            pendingDeleteCapture = null
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (error: Exception) { deleteCaptureError = error.message ?: "Unable to delete capture. Please try again." }
+                        finally { deletingCapture = false }
+                    }
+                }) { Text(if (deletingCapture) "Deleting…" else "Delete") }
+            },
+            dismissButton = {
+                TextButton(enabled = !deletingCapture, onClick = { pendingDeleteCapture = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -389,6 +426,7 @@ private fun SectionHeading(
 private fun ResumeRow(
     session: SessionMetadata,
     onResume: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val captured = session.images.count { it.accepted }
@@ -426,10 +464,13 @@ private fun ResumeRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "$captured of $total positions · tap to continue",
+                    text = "$captured photos · tap to continue",
                     style = MaterialTheme.typography.labelSmall,
                     color = Amber,
                 )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.testTag("delete-capture-${session.id}")) {
+                Icon(Icons.Rounded.Delete, contentDescription = "Delete capture", tint = Amber)
             }
             Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = Muted)
         }

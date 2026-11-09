@@ -81,7 +81,9 @@ local `dev` is identical to `origin/dev`.
   keep retrying that dot after the user overrides. Missing/unreadable images or
   capture failures cannot count as completion. Persist overridden warnings.
 - Preserve accepted and rejected source photos; no automatic source deletion
-  after stitching.
+  after stitching. The user may explicitly confirm deletion of an unfinished
+  capture and its source folder. Keep saved sphere JPEGs, exports and other
+  sessions intact; deleting a gallery sphere alone still preserves originals.
 
 ## Stitching and viewer
 
