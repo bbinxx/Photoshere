@@ -75,8 +75,13 @@ local `dev` is identical to `origin/dev`.
 - Allow one automatic attempt per stationary visit, including failed validation.
   Require actual movement before automatic rearming; cooldown expiry or jitter
   alone must not cause repeated photos. Keep explicit manual retries available.
-- Reject unsuitable blur/exposure and request a retake. Preserve accepted and
-  rejected source photos; no automatic source deletion after stitching.
+- Automatic capture rejects unsuitable blur/exposure/movement and requests a
+  retake. An explicit manual shutter press must take and accept a readable image,
+  overriding quality, stability and duplicate-area advice, then advance. Do not
+  keep retrying that dot after the user overrides. Missing/unreadable images or
+  capture failures cannot count as completion. Persist overridden warnings.
+- Preserve accepted and rejected source photos; no automatic source deletion
+  after stitching.
 
 ## Stitching and viewer
 

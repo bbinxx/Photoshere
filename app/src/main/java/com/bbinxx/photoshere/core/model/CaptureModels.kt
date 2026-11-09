@@ -128,6 +128,7 @@ data class CapturedImageMeta(
     val note: String? = null,
     val horizontalFovDeg: Float = 0f,
     val verticalFovDeg: Float = 0f,
+    val manualOverride: Boolean = false,
 )
 
 data class SessionMetadata(
@@ -176,6 +177,7 @@ data class QualityReport(
     val meanLuma: Float,
     val acceptable: Boolean,
     val reason: String? = null,
+    val readable: Boolean = true,
 )
 
 data class ProcessingProgress(

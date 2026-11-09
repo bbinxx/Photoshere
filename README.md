@@ -71,8 +71,11 @@ you do not have to follow a fixed numbered sequence.
 - Still capture favors image quality over minimum shutter latency.
 - Focus and exposure locks are optional settings. Automatic adjustment is the
   default; existing installations migrate once to these automatic defaults.
-- Blur, very dark images, and overexposure are checked after capture. Failed
-  photographs are retained and the app requests a retake.
+- Automatic shots are checked for blur, darkness, overexposure and movement.
+  Failed photographs are retained and the app requests a retake.
+- An explicit manual shutter press accepts a readable photograph despite these
+  quality/stability warnings and advances to the next area. Missing or unreadable
+  images still require a successful capture.
 - Flash and torch controls are available, subject to lens/device support.
 
 Automatic metering cannot recover missing light or remove motion blur in every
@@ -93,8 +96,12 @@ After any capture attempt, including a rejected or failed image, automatic
 capture waits for real movement away from the attempted viewing direction.
 Staying aligned, sensor jitter, target changes and cooldown expiry cannot trigger
 an endless retake loop. After a failure, adjust and realign or explicitly tap the
-shutter to retry. Accepted near-identical directions must add substantial new
-coverage, while genuine small gaps remain capturable.
+shutter to take and accept the image, ending that area's retry loop. A manual
+press overrides quality, stability and duplicate-area advice; the app records
+that choice in session metadata when quality/stability warnings were overridden.
+Automatic shots in near-identical directions must add substantial new coverage,
+while genuine small gaps remain capturable. An unreadable/failed capture cannot
+be marked completed.
 
 ## Implemented features
 
@@ -191,7 +198,7 @@ Device tests, leaving the APKs installed afterward:
 
 ### Latest verified result
 
-On 2026-11-10, debug assembly and lint passed, along with **40 JVM tests and
+On 2026-11-10, debug assembly and lint passed, along with **43 JVM tests and
 10 device tests**, with no failures. The connected M2101K6P did not expose an
 ultra-wide option to this application, so actual 0.5× capture remains unverified
 on hardware that exposes that lens. Main-camera capture and preview/JPEG ratio
@@ -203,6 +210,8 @@ Unit regressions cover:
 
 - Quaternion rotation-vector decoding, scalar sign, roll, and orientation maths.
 - Alignment thresholds and screen-axis direction after rolling the phone.
+- Manual acceptance overrides quality/stability warnings while unreadable images
+  remain rejected, including saved-session persistence on device.
 - Movement rearming after capture attempts, stationary/jitter suppression,
   near-duplicate filtering and final coverage gap completion.
 - Field-of-view-based capture planning and nearest uncaptured targets.
@@ -254,6 +263,9 @@ parallax, moving subjects, and portrait/landscape changes during capture.
 | 8. Optimization and testing | In progress; real-world quality, calibration, thermal/memory profiling remain |
 
 ### Recent changes
+
+- Explicit manual shutter now accepts readable photos and advances instead of
+  repeatedly rejecting the same area; overridden warnings are saved in metadata.
 
 - Added visible gallery/viewer deletion with a shared confirmation and preserved originals.
 - Prevented repeated automatic attempts while holding at the same dot, including

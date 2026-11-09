@@ -485,10 +485,7 @@ class CaptureViewModel(
             return
         }
         val lens = cameraController.selectedLens() ?: return
-        if (!coverageModel.addsCoverage(snapshot.quaternion, lens.horizontalFovDeg, lens.verticalFovDeg)) {
-            if (manual) mutableState.value = mutableState.value.copy(notice = "This area is already covered. Point toward an uncaptured area.")
-            return
-        }
+        if (!manual && !coverageModel.addsCoverage(snapshot.quaternion, lens.horizontalFovDeg, lens.verticalFovDeg)) return
         val target = if (manual) {
             CaptureTarget(
                 id = (targets.maxOfOrNull { it.id } ?: -1) + 1,
@@ -537,6 +534,9 @@ class CaptureViewModel(
                 )
                 val quality = withContext(Dispatchers.IO) { qualityValidator.validate(file) }
                 val lens = cameraController.selectedLens()
+                val accepted = CaptureAcceptance.accepts(manual, quality, shutterPose.stable)
+                val overridden = manual && accepted && (!quality.acceptable || !shutterPose.stable)
+                val qualityNote = quality.reason ?: if (!shutterPose.stable) "Camera moved during capture" else null
                 val meta = CapturedImageMeta(
                     targetId = target.id,
                     filePath = file.absolutePath,
@@ -546,8 +546,9 @@ class CaptureViewModel(
                     timestampMs = System.currentTimeMillis(),
                     sharpness = quality.sharpness,
                     meanLuma = quality.meanLuma,
-                    accepted = quality.acceptable && (manual || shutterPose.stable),
-                    note = quality.reason ?: if (!manual && !shutterPose.stable) "Camera moved during capture. Retake this area." else null,
+                    accepted = accepted,
+                    manualOverride = overridden,
+                    note = if (overridden) "Accepted by manual shutter: $qualityNote" else qualityNote,
                     horizontalFovDeg = lens?.horizontalFovDeg ?: active.horizontalFovDeg,
                     verticalFovDeg = lens?.verticalFovDeg ?: active.verticalFovDeg,
                 )

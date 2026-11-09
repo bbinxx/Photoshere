@@ -43,6 +43,9 @@ class AppNavigationTest {
                 SystemClock.sleep(100)
             }
             org.junit.Assert.assertTrue("Manual shutter must capture the area the camera faces", saved)
+            val captured = app.container.sessionStore.listSessions().flatMap { it.images }
+                .first { it.timestampMs >= startedAt }
+            org.junit.Assert.assertTrue("A readable manual photo must be accepted and advance capture", captured.accepted)
             compose.onNodeWithContentDescription("Capture settings").performClick()
             compose.mainClock.advanceTimeBy(500)
             compose.activityRule.scenario.recreate()

@@ -114,6 +114,7 @@ class SessionStore(private val context: Context) {
                     put("sharpness", image.sharpness.toDouble())
                     put("meanLuma", image.meanLuma.toDouble())
                     put("accepted", image.accepted)
+                    put("manualOverride", image.manualOverride)
                     put("note", image.note)
                     put("horizontalFovDeg", image.horizontalFovDeg.toDouble())
                     put("verticalFovDeg", image.verticalFovDeg.toDouble())
@@ -156,6 +157,7 @@ class SessionStore(private val context: Context) {
                     sharpness = image.optDouble("sharpness", 0.0).toFloat(),
                     meanLuma = image.optDouble("meanLuma", 0.0).toFloat(),
                     accepted = image.optBoolean("accepted", true),
+                    manualOverride = image.optBoolean("manualOverride", false),
                     note = image.optString("note").takeIf { it.isNotBlank() && it != "null" },
                     horizontalFovDeg = image.optDouble("horizontalFovDeg", 0.0).toFloat(),
                     verticalFovDeg = image.optDouble("verticalFovDeg", 0.0).toFloat(),
