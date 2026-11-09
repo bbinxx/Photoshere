@@ -26,6 +26,10 @@ class SettingsRepository(context: Context) {
     }
 
     private fun load(): CaptureSettings {
+        if (prefs.getInt("settings_version", 0) < 2) {
+            prefs.edit().putBoolean(KEY_EXPOSURE_LOCK, false).putBoolean(KEY_FOCUS_LOCK, false)
+                .putInt("settings_version", 2).apply()
+        }
         val default = CaptureSettings()
         return default.copy(
             autoCapture = prefs.getBoolean(KEY_AUTO_CAPTURE, default.autoCapture),

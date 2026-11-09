@@ -22,7 +22,7 @@ import java.util.UUID
 @RunWith(AndroidJUnit4::class)
 class CameraDeviceTest {
     @Test
-    fun rearCameraSavesRealJpegAndSensorsDeliverOrientation() = runBlocking {
+    fun rearCameraSavesRealJpegAndSensorsDeliverOrientation() = runBlocking<Unit> {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         instrumentation.uiAutomation.grantRuntimePermission(context.packageName, Manifest.permission.CAMERA)
@@ -54,6 +54,24 @@ class CameraDeviceTest {
             assertTrue("Camera must save actual image pixels", bounds.outWidth > 0 && bounds.outHeight > 0)
             assertTrue(output.length() > 1000)
             assertFalse(controller.state.value.busy)
+            fun checkPreviewAspect() {
+                val exif = androidx.exifinterface.media.ExifInterface(output)
+                BitmapFactory.decodeFile(output.path, bounds)
+                val ratio = if (exif.rotationDegrees % 180 == 0) bounds.outWidth.toFloat() / bounds.outHeight
+                    else bounds.outHeight.toFloat() / bounds.outWidth
+                assertEquals("Preview must match the complete JPEG field", ratio, controller.state.value.previewAspectRatio, 0.02f)
+            }
+            checkPreviewAspect()
+            val mainFov = controller.selectedLens()!!.horizontalFovDeg
+            val ultra = controller.state.value.lenses.firstOrNull { !it.isFront && it.relativeZoom < 0.8f }
+            if (ultra != null) {
+                withContext(Dispatchers.Main) { controller.selectLens(ultra.id) }
+                withTimeout(20_000) { controller.state.first { it.ready && it.selectedCameraId == ultra.id } }
+                assertTrue(controller.selectedLens()!!.horizontalFovDeg > mainFov)
+                withTimeout(20_000) { withContext(Dispatchers.Main) { controller.capture(output) } }
+                checkPreviewAspect()
+                android.util.Log.i("CameraDeviceTest", "Ultra-wide capture verified: ${ultra.id}")
+            } else android.util.Log.i("CameraDeviceTest", "Ultra-wide is not exposed by this device")
         } finally {
             tracker.stop()
             withContext(Dispatchers.Main) { controller.unbind() }

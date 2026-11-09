@@ -72,8 +72,8 @@ data class CaptureSettings(
     val outputHeight: Int = 1536,
     val jpegQuality: Int = 92,
     val processingQuality: Float = 1.0f,
-    val exposureLock: Boolean = true,
-    val focusLock: Boolean = true,
+    val exposureLock: Boolean = false,
+    val focusLock: Boolean = false,
     val hapticFeedback: Boolean = true,
     val soundFeedback: Boolean = true,
     val saveOriginals: Boolean = true,
@@ -150,6 +150,9 @@ data class CameraLens(
     val focalLengthMm: Float? = null,
     val horizontalFovDeg: Float = 65f,
     val verticalFovDeg: Float = 50f,
+    val logicalCameraId: String = id,
+    val zoomRatio: Float = 1f,
+    val relativeZoom: Float = 1f,
 )
 
 data class SphereMetadata(

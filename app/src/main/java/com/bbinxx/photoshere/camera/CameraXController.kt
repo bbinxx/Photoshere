@@ -1,6 +1,8 @@
 package com.bbinxx.photoshere.camera
 
 import android.content.Context
+import android.hardware.camera2.CameraManager
+import android.os.Build
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
@@ -31,8 +33,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.Observer
 import com.bbinxx.photoshere.core.model.CameraLens
+import com.bbinxx.photoshere.core.model.CameraGeometry
 import com.bbinxx.photoshere.core.model.FlashSetting
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,19 +74,20 @@ class CameraXController(
     private var lifecycleOwner: LifecycleOwner? = null
     private var selectedCameraId: String? = null
     private var displayRotation: Int = 0
+    private var bufferAspect = 4f / 3f
 
     @Volatile private var aeConverged = false
     @Volatile private var awbConverged = false
     private var locksApplied = false
-    private var exposureLock = true
-    private var focusLock = true
-    private var whiteBalanceLock = true
+    private var exposureLock = false
+    private var focusLock = false
+    private var whiteBalanceLock = false
 
     private var zoomObserver: Observer<androidx.camera.core.ZoomState>? = null
     private var cameraStateObserver: Observer<androidx.camera.core.CameraState>? = null
 
 
-    fun setCaptureLocks(exposure: Boolean, focus: Boolean, whiteBalance: Boolean = true) {
+    fun setCaptureLocks(exposure: Boolean, focus: Boolean, whiteBalance: Boolean = false) {
         val changed = exposureLock != exposure || focusLock != focus || whiteBalanceLock != whiteBalance
         exposureLock = exposure
         focusLock = focus
@@ -116,7 +122,8 @@ class CameraXController(
     override fun unbind() {
         runCatching {
             removeObservers()
-            provider?.unbindAll()
+            val owned = listOfNotNull(preview, imageCapture)
+            if (owned.isNotEmpty()) provider?.unbind(*owned.toTypedArray())
         }
         camera = null
         preview = null
@@ -158,6 +165,10 @@ class CameraXController(
                 )
             }
         } finally {
+            // A per-shot metering trigger uses AF_AUTO and temporarily holds
+            // focus. Release it immediately so CameraX restores its continuous
+            // picture AF mode throughout the live preview.
+            if (!focusLock) camera?.cameraControl?.cancelFocusAndMetering()
             mutableState.value = mutableState.value.copy(busy = false)
         }
     }
@@ -245,7 +256,8 @@ class CameraXController(
             aeConverged = false
             awbConverged = false
             locksApplied = false
-            cameraProvider.unbindAll()
+            val owned = listOfNotNull(preview, imageCapture)
+            if (owned.isNotEmpty()) cameraProvider.unbind(*owned.toTypedArray())
 
             val cameraInfos = cameraProvider.availableCameraInfos
             val lenses = buildLensList(cameraInfos)
@@ -254,10 +266,11 @@ class CameraXController(
                 ?: lenses.firstOrNull()?.id
                 ?: throw IllegalStateException("No camera available")
             selectedCameraId = targetId
+            val chosenLens = lenses.first { it.id == targetId }
 
             val selector = CameraSelector.Builder()
                 .addCameraFilter(CameraFilter { infos ->
-                    infos.filter { Camera2CameraInfo.from(it).cameraId == targetId }
+                    infos.filter { Camera2CameraInfo.from(it).cameraId == chosenLens.logicalCameraId }
                 })
                 .build()
 
@@ -271,7 +284,7 @@ class CameraXController(
                 .setResolutionSelector(resolutionSelector)
             val imageCaptureBuilder = ImageCapture.Builder()
                 .setTargetRotation(displayRotation)
-                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .setJpegQuality(SOURCE_JPEG_QUALITY)
                 .setResolutionSelector(resolutionSelector)
                 .setFlashMode(ImageCapture.FLASH_MODE_OFF)
@@ -309,6 +322,22 @@ class CameraXController(
             preview = newPreview
             imageCapture = newImageCapture
             camera = boundCamera
+            val resolution = newImageCapture.resolutionInfo?.resolution
+            if (resolution != null) bufferAspect = resolution.width.toFloat() / resolution.height
+            if (chosenLens.zoomRatio != 1f) {
+                suspendCancellableCoroutine<Unit> { continuation ->
+                    val future = boundCamera.cameraControl.setZoomRatio(chosenLens.zoomRatio)
+                    future.addListener({
+                        try {
+                            future.get()
+                            if (continuation.isActive) continuation.resume(Unit)
+                        } catch (error: Exception) {
+                            if (continuation.isActive) continuation.resumeWithException(error)
+                        }
+                    }, mainExecutor)
+                }
+            }
+            val measuredLenses = buildLensList(cameraInfos)
 
             val zoomState = boundCamera.cameraInfo.zoomState.value
             val exposure = boundCamera.cameraInfo.exposureState
@@ -318,7 +347,7 @@ class CameraXController(
                 ready = true,
                 busy = false,
                 selectedCameraId = targetId,
-                lenses = lenses,
+                lenses = measuredLenses,
                 flash = mutableState.value.flash,
                 zoomRatio = zoomState?.zoomRatio ?: 1f,
                 minZoom = zoomState?.minZoomRatio ?: 1f,
@@ -326,6 +355,7 @@ class CameraXController(
                 exposureCompensation = exposure.exposureCompensationIndex,
                 minExposureCompensation = exposure.exposureCompensationRange.lower,
                 maxExposureCompensation = exposure.exposureCompensationRange.upper,
+                previewAspectRatio = captureAspectRatio(),
                 error = null,
             )
             Log.i(TAG, "Bound camera $targetId (${selectedLens?.label}) fov=${selectedLens?.horizontalFovDeg}x${selectedLens?.verticalFovDeg}")
@@ -345,13 +375,18 @@ class CameraXController(
     }
 
     private suspend fun applyConvergedLocks() {
-        if (locksApplied) return
         val bound = camera ?: return
-        if (focusLock) {
-            val action = FocusMeteringAction.Builder(
+        if (!focusLock || !locksApplied) {
+            val builder = FocusMeteringAction.Builder(
                 SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f),
-                FocusMeteringAction.FLAG_AF,
-            ).disableAutoCancel().build()
+                FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB or
+                    (if (focusLock) FocusMeteringAction.FLAG_AF else 0),
+            )
+            // Continuous AF stays active by default. An explicit AF trigger
+            // switches CameraX to AF_AUTO; request that only for focus lock.
+            // Still capture's quality pipeline performs its own 3A sequence.
+            builder.disableAutoCancel()
+            val action = builder.build()
             if (bound.cameraInfo.isFocusMeteringSupported(action)) {
                 suspendCancellableCoroutine<Unit> { continuation ->
                     val future = bound.cameraControl.startFocusAndMetering(action)
@@ -362,6 +397,10 @@ class CameraXController(
                     continuation.invokeOnCancellation { future.cancel(false) }
                 }
             }
+        }
+        if (locksApplied) return
+        withTimeoutOrNull(1500) {
+            while (!aeConverged || !awbConverged) delay(50)
         }
         val info = Camera2CameraInfo.from(bound.cameraInfo)
         val options = CaptureRequestOptions.Builder()
@@ -440,7 +479,7 @@ class CameraXController(
 
     private fun rebuildLensMetrics(cameraProvider: ProcessCameraProvider) {
         val lenses = buildLensList(cameraProvider.availableCameraInfos)
-        mutableState.value = mutableState.value.copy(lenses = lenses)
+        mutableState.value = mutableState.value.copy(lenses = lenses, previewAspectRatio = captureAspectRatio())
     }
 
     private fun buildLensList(
@@ -480,41 +519,55 @@ class CameraXController(
             }.getOrNull()
         }
 
-        val sorted = entries.sortedWith(
-            compareBy<Entry> { if (it.front) 1 else 0 }.thenByDescending { it.pixels },
-        )
-        var rearIndex = 0
-        return sorted.map { entry ->
-            val metrics = lensMetrics(entry.focal, entry.sensorSize)
-            val label = if (entry.front) {
-                "Front camera"
-            } else {
-                rearIndex++
-                if (rearIndex == 1) "Rear main" else "Rear lens $rearIndex"
-            }
-            CameraLens(
-                id = entry.id,
-                label = label,
-                isFront = entry.front,
-                focalLengthMm = entry.focal,
-                horizontalFovDeg = metrics.first,
-                verticalFovDeg = metrics.second,
-            )
+        val mainId = runCatching {
+            Camera2CameraInfo.from(CameraSelector.DEFAULT_BACK_CAMERA.filter(cameraInfos).first()).cameraId
+        }.getOrNull() ?: entries.firstOrNull { !it.front }?.id
+        val main = entries.firstOrNull { it.id == mainId }
+        val mainScale = (main?.focal ?: 1f) / (main?.sensorSize?.width ?: 1f)
+        fun metrics(entry: Entry, focal: Float? = entry.focal, size: SizeF? = entry.sensorSize): Pair<Float, Float> {
+            if (focal == null || size == null || focal <= 0) return 50f to 65f
+            return CameraGeometry.fieldOfView(size.width, size.height, focal, bufferAspect,
+                entry.info.getSensorRotationDegrees(displayRotation))
         }
+        val lenses = entries.sortedWith(compareBy<Entry> { it.front }.thenBy { it.id != mainId }).map { entry ->
+            val fov = metrics(entry)
+            val relative = ((entry.focal ?: 1f) / (entry.sensorSize?.width ?: 1f)) / mainScale
+            CameraLens(entry.id,
+                when {
+                    entry.front -> "Front camera"
+                    entry.id == mainId -> "Rear main"
+                    relative < 0.8f -> "Ultra wide"
+                    else -> "Rear lens ${entry.id}"
+                }, entry.front, entry.focal, fov.first, fov.second, relativeZoom = relative)
+        }.toMutableList()
+        // Some vendors expose ultra-wide only through the logical camera's zoom
+        // range. Prefer its physical sensor intrinsics when they are readable.
+        if (main != null && lenses.none { !it.isFront && it.relativeZoom < 0.8f } && Build.VERSION.SDK_INT >= 30) {
+            val minZoom = Camera2CameraInfo.from(main.info)
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower ?: 1f
+            if (minZoom < 0.8f) {
+                val manager = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                val physical = runCatching { manager.getCameraCharacteristics(main.id).physicalCameraIds.mapNotNull { id ->
+                    runCatching {
+                        val chars = manager.getCameraCharacteristics(id)
+                        val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull()
+                        val size = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+                        if (focal != null && size != null) focal to size else null
+                    }.getOrNull()
+                }.minByOrNull { it.first / it.second.width } }.getOrNull()
+                val fov = if (physical != null && physical.first / physical.second.width < mainScale * 0.8f)
+                    metrics(main, physical.first, physical.second)
+                else metrics(main, main.focal?.times(minZoom))
+                lenses.add(CameraLens("${main.id}@ultrawide", "Ultra wide", false,
+                    physical?.first, fov.first, fov.second, main.id, minZoom, minZoom))
+            }
+        }
+        return lenses
     }
 
-    private fun lensMetrics(focal: Float?, sensorSize: SizeF?): Pair<Float, Float> {
-        if (focal == null || sensorSize == null || focal <= 0f) {
-            return 65f to 50f
-        }
-        val sensorWidthFov = 2.0 * atan(sensorSize.width / (2.0 * focal)) * 180.0 / Math.PI
-        val sensorHeightFov = 2.0 * atan(sensorSize.height / (2.0 * focal)) * 180.0 / Math.PI
-        return if (displayRotation == android.view.Surface.ROTATION_0 || displayRotation == android.view.Surface.ROTATION_180) {
-            // Sensor is landscape; portrait display swaps the axes.
-            sensorHeightFov.toFloat() to sensorWidthFov.toFloat()
-        } else {
-            sensorWidthFov.toFloat() to sensorHeightFov.toFloat()
-        }
+    private fun captureAspectRatio(): Float {
+        val rotation = imageCapture?.resolutionInfo?.rotationDegrees ?: 90
+        return if (rotation % 180 == 0) bufferAspect else 1f / bufferAspect
     }
 
     private fun cameraErrorMessage(code: Int): String = when (code) {
